@@ -2,8 +2,9 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import json
-import sqlite3
 import os
+import requests  # ←これが抜けていたため追加
+from bs4 import BeautifulSoup  # ←こちらもセットで追加
 import google.generativeai as genai
 
 # ==========================================
