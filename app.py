@@ -142,7 +142,8 @@ def calculate_kelly_bet(predicted_win_rate, odds, bankroll, kelly_fraction=0.25)
 st.sidebar.title("🏇 AI競馬 ROIシステム")
 page = st.sidebar.radio("メニュー", ["🛠️ レース分析＆AI予測", "📈 バックテスト分析"])
 
+# 修正箇所（146行目〜149行目付近）
 st.sidebar.markdown("---")
 st.sidebar.header("⚙️ 資金管理設定")
 initial_bankroll = st.sidebar.number_input("現在資金 (円)", min_value=10000, value=100000, step=10000)
-kelly_fraction = st.sidebar.slider("ケリー係数 (
+kelly_fraction = st.sidebar.slider("ケリー係数 (安全率)", min_value=0.1, max_value=1.0, value=0.25, step=0.05)
