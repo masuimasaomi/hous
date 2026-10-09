@@ -20,29 +20,39 @@ genai.configure(api_key=GOOGLE_API_KEY)
 # 1. コア・アルゴリズム (AI予測 & 資金管理)
 # ==========================================
 def get_gemini_prediction(race_data_text):
-    """Gemini-3.5-flashを使ってレースデータのテキストから勝率を予測する"""
+    """Geminiを使ってレースデータから実質勝率と馬連のおすすめ買い目を予測する"""
     system_prompt = """
     あなたは競馬の確率論に精通したプロのデータサイエンティストです。
-    提供されたデータのみから「その馬が1着になる実質勝率」を算出し、以下のJSONフォーマットのみを出力してください。
+    提供された出馬表・レースデータから各馬の実力・展開・オッズを分析し、
+    期待値の高い「馬連のおすすめ買い目」を最大5組選定して以下のJSONフォーマットのみを出力してください。
+
     {
-      "horse_number": 1,
-      "predicted_win_rate": 0.15,
-      "confidence_score": 8,
-      "reasoning": "根拠"
+      "race_name": "レース名（判明する場合）",
+      "recommended_umaren": [
+        {
+          "combination": "1 - 5",
+          "predicted_rate": 0.12,
+          "current_odds": 15.4,
+          "reason": "軸馬の安定感と対抗馬の差し脚展開が合致するため"
+        },
+        {
+          "combination": "1 - 8",
+          "predicted_rate": 0.08,
+          "current_odds": 28.0,
+          "reason": "穴馬の好走傾向あり"
+        }
+      ]
     }
     """
     try:
-        # モデルの指定 (gemini-3.5-flash) とシステムプロンプトの設定
         model = genai.GenerativeModel(
             'gemini-3.5-flash',
             system_instruction=system_prompt
         )
-        # JSON出力を強制するコンフィグ
         generation_config = genai.GenerationConfig(
             response_mime_type="application/json",
             temperature=0.2,
         )
-        
         response = model.generate_content(
             race_data_text,
             generation_config=generation_config
