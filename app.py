@@ -20,33 +20,31 @@ if GOOGLE_API_KEY:
 # 1. AI予測 & 資金管理ロジック
 # ==========================================
 def get_gemini_prediction(combined_race_text):
-    """Gemini 3.5 Flash による荒れ度・上がり3F・調教内容（タイム・強度）の超高精度統合解析"""
+    """Gemini 3.5 Flash による過去走10走調子視覚化データ＋上がり3F＋調教の統合解析"""
     system_prompt = """
-    あなたは競馬の確率論・末脚（上がり3F）データ分析・調教時計解析に精通したプロのデータサイエンティスト・トラックマンです。
-    提供された【競馬新聞・出馬表データ（過去3走成績・上がり3F・通過順含む）】および【調教データ】を精査し、各馬の実質勝率（1着確率）、レースの荒れ度、印、馬連推奨を分析してください。
+    あなたは競馬の確率論・末脚（上がり3F）データ分析・調教時計解析・調子トレンド分析に精通したプロのデータサイエンティストです。
+    提供された【競馬新聞・出馬表データ（過去走成績・上がり3F含む）】および【調教データ】を精査し、各馬の実質勝率（1着確率）、調子トレンド（直近10走/過去走の上がり3Fタイム推移）、レース荒れ度、印、馬連推奨を分析してください。
 
     【最重要解析ポイント】
-    1. 調教データの評価軸（コメントより「内容・数字」を最重視）:
-       - 定型コメント（「順調」「良好」等）は無視し、**具体的な調教内容（コース・馬ナリ/強め/一杯の追い切り強度・全体タイム・ラスト1Fタイム・併せ馬の先着/遅れ）**を徹底解析してください。
-       - 特に「CWや坂路でラスト1F 11.0〜11.5秒前後の優秀な上がり時計」「馬ナリで好時計」「併せ馬で追走先着」といった具体的数値データを勝率に強く加点してください。
-    2. 上がり3F（スパート力）評価:
-       - 新聞データに含まれる「前走上がり3Fタイム」「過去3走の上がり3F平均」「上がり順位（1位・2位等）」を算出し、メンバー内で優秀な馬に高い評価を与えてください。
-    3. レース荒れ度（波乱度）の判定:
-       - 上位人気の信頼性、能力差、調教内容・上がり3Fの競合度合いから「超高波乱」「高波乱」「中波乱」「堅調」を判定してください。
-    4. 馬名・馬番の正確性:
+    1. 調子視覚化（過去走上がり3Fタイム推移）:
+       - 印（◎, ◯, ▲）をつけた主要馬について、過去走（最大10走分）の「上がり3Fタイム（秒）」を数値配列として抽出してください。（例: [34.2, 33.8, 34.5, 33.5]）
+       - 調子トレンド（「🔥 急上昇（覚醒中）」「安定ピーク」「⚠️ 低迷気味」等）を判定してください。
+    2. 調教データの評価（コメントより「内容・数字」を最重視）:
+       - 具体的調教内容（コース・強さ・タイム・ラスト1F・併せ馬結果）を最優先で評価してください。
+    3. 馬名・馬番の正確性:
        - 必ずテキスト内に存在する「実際の馬番」「実際の馬名」のみを使用してください。
 
     印の定義:
-    ◎: 本命（メンバー最速クラスの上がり3F性能＋調教内容・時計が最優秀で最も勝ち切る確率が高い馬）
+    ◎: 本命（メンバー最速クラスの上がり3F性能＋調教内容・時計最優秀で最も勝ち切る確率が高い馬）
     ◯: 対抗（2番手に高い上がり性能・調教内容を持つ馬）
-    ▲: 穴馬（過去3走で速い上がり3Fを出しているが人気薄、または調教タイム・仕上がり内容が一変して期待値が大きい穴馬）
-    △: ひも（掲示板級の上がり性能・一定の調教内容を持ち2・3着候補の馬）
+    ▲: 穴馬（調教一変や上がり3Fの短縮傾向があり期待値が大きい穴馬）
+    △: ひも（掲示板級の上がり性能を持ち2・3着候補の馬）
 
     以下のJSONフォーマットのみを出力してください。
     {
       "race_name": "レース名（例: 東京1R 2歳未勝利）",
       "volatility_level": "🔥🔥🔥 超高波乱",
-      "volatility_reason": "オッズ上位陣に決定打がなく、調教時計・上がり3F数値も僅差。混戦で大穴激走の可能性が高い難解なレース。",
+      "volatility_reason": "上位人気に絶対的軸がおらず、調教時計・上がり3Fの過去傾向も僅差。",
       "predictions": [
         {
           "mark": "◎",
@@ -54,7 +52,9 @@ def get_gemini_prediction(combined_race_text):
           "horse_name": "実際の馬名",
           "predicted_win_rate": 0.28,
           "current_odds": 3.2,
-          "reason": "【調教: CW 6F 81.2-11.2 (馬ナリ) 併せ先着】 調教時計・ラスト1Fともにメンバー随一。前走上がり最速33.8秒と合わせ信頼度高"
+          "condition_trend": "🔥 急上昇（絶好調）",
+          "recent_3f_history": [35.1, 34.5, 34.0, 33.6],
+          "reason": "【調教: CW 6F 81.2-11.2 (馬ナリ)】 近走上がり3Fタイムが走るごとに短縮しており絶好調トレンド"
         },
         {
           "mark": "◯",
@@ -62,15 +62,19 @@ def get_gemini_prediction(combined_race_text):
           "horse_name": "実際の馬名",
           "predicted_win_rate": 0.18,
           "current_odds": 4.8,
-          "reason": "【調教: 坂路 52.4-11.8 (強め)】 追い切り時計が優秀で仕上がり万全。過去3走上がり平均2位"
+          "condition_trend": "安定ピーク",
+          "recent_3f_history": [34.2, 34.0, 34.1, 33.9],
+          "reason": "【調教: 坂路 52.4-11.8 (強め)】 過去走でも安定して上がり34.0前後をマーク"
         },
         {
           "mark": "▲",
           "horse_number": 5,
-          "horse_name": "実際の馬name",
+          "horse_name": "実際の馬名",
           "predicted_win_rate": 0.14,
           "current_odds": 15.0,
-          "reason": "【調教: 坂路 53.0-11.5 (馬ナリ) 時計大幅自己更新】 コメントよりも今回の調教時計の一変が顕著。大穴の妙味大"
+          "condition_trend": "一発の妙味あり",
+          "recent_3f_history": [36.2, 35.8, 34.2],
+          "reason": "【調教: 坂路 53.0-11.5 (馬ナリ)】 前走で上がり34.2に激変。一発警戒"
         },
         {
           "mark": "△",
@@ -78,7 +82,9 @@ def get_gemini_prediction(combined_race_text):
           "horse_name": "実際の馬名",
           "predicted_win_rate": 0.06,
           "current_odds": 18.0,
-          "reason": "【調教: CW 84.0-12.2 (馬ナリ)】 控えめな時計だが上がり3F安定で3着候補"
+          "condition_trend": "平行線",
+          "recent_3f_history": [35.0, 34.8, 35.2],
+          "reason": "【調教: CW 84.0-12.2 (馬ナリ)】 上がり35.0前後で安定"
         }
       ],
       "recommended_umaren": [
@@ -86,13 +92,13 @@ def get_gemini_prediction(combined_race_text):
           "combination": "1 - 2",
           "predicted_rate": 0.15,
           "current_odds": 10.5,
-          "reason": "調教内容最上位◎と好時計◯の堅実組み合わせ"
+          "reason": "上がり3F短縮中の◎と安定感誇る◯の堅実ペア"
         },
         {
           "combination": "1 - 5",
           "predicted_rate": 0.09,
           "current_odds": 32.0,
-          "reason": "◎から調教時計大幅更新の穴▲への高期待値ペア"
+          "reason": "◎から調教・上がり一変中の穴▲への高期待値ペア"
         }
       ]
     }
@@ -152,13 +158,13 @@ initial_bankroll = st.sidebar.number_input("現在資金 (円)", min_value=10000
 kelly_fraction = st.sidebar.slider("ケリー係数 (安全率)", min_value=0.1, max_value=1.0, value=0.25, step=0.05)
 
 if page == "🛠️ レース分析＆AI予測":
-    st.title("🎯 AI全自動分析（調教内容・時計重視モデル）")
-    st.write("出馬表・競馬新聞URLを入力すると、定型コメントに頼らず「調教のタイム・強度・上がり3F」をシビアに解析します。")
+    st.title("🎯 AI全自動分析（調子バイタル視覚化 ＆ Gemini 3.5 Flash）")
+    st.write("出馬表・競馬新聞URLを入力すると、過去走の上がり3Fタイム推移（調子グラフ）と推奨買い目を自動出力します。")
     
     default_url = "https://race.netkeiba.com/race/newspaper.html?m=riot-shutuba-past&race_id=202605040401"
     target_url = st.text_input("出馬表 / 競馬新聞URLを入力", value=default_url)
     
-    if st.button("調教内容・時計＋上がり3F＋オッズを総合AI分析"):
+    if st.button("調子バイタルグラフ＋調教＋オッズを総合AI分析"):
         if not target_url:
             st.warning("URLを入力してください。")
         elif not GOOGLE_API_KEY:
@@ -201,7 +207,7 @@ if page == "🛠️ レース分析＆AI予測":
 
             combined_race_text = f"【レース名】: {race_name}\n\n【競馬新聞・過去走・上がり3Fデータ】:\n{shutuba_text}\n\n【調教・追い切りタイム・内容データ】:\n{oikiri_text}"
 
-            with st.spinner('3/3 Gemini 3.5 Flash で調教内容・時計＆上がり3F分析を実行中...'):
+            with st.spinner('3/3 Gemini 3.5 Flash で調子トレンド＆上がり3F分析を実行中...'):
                 res = get_gemini_prediction(combined_race_text)
                 
                 if "error" in res:
@@ -214,8 +220,31 @@ if page == "🛠️ レース分析＆AI予測":
                     
                     st.info(f"⚡ **レース波乱度:** {vol_level}\n\n**【混戦・波乱理由】:** {vol_reason}")
                     
-                    st.markdown("### 🏇 出走馬・印別予測勝率 (調教内容・時計 ＆ 上がり3F反映)")
+                    # 📈 上がり3F推移（調子バイタル）の折れ線グラフ描画
+                    st.markdown("### 📈 主要馬の上がり3Fタイム推移（調子バイタル）")
                     preds = res.get("predictions", [])
+                    
+                    chart_data = {}
+                    for item in preds:
+                        horse_label = f"{item.get('mark', '')} {item.get('horse_number', '')}.{item.get('horse_name', '')}"
+                        history = item.get("recent_3f_history", [])
+                        if history:
+                            chart_data[horse_label] = history
+                    
+                    if chart_data:
+                        # 長さを揃えてDataFrame作成
+                        max_len = max(len(v) for v in chart_data.values())
+                        formatted_chart_data = {}
+                        for k, v in chart_data.items():
+                            padded = [np.nan] * (max_len - len(v)) + v
+                            formatted_chart_data[k] = padded
+                        
+                        df_chart = pd.DataFrame(formatted_chart_data)
+                        df_chart.index = [f"{i}年前/前走" if i==0 else f"{i}走前" for i in range(max_len-1, -1, -1)]
+                        st.line_chart(df_chart)
+                        st.caption("※折れ線グラフが下に行くほど上がり3Fが速く（末脚性能が高い）、右肩下がりなら調子上昇傾向を示します。")
+
+                    st.markdown("### 🏇 出走馬・印別予測勝率 ＆ 調子トレンド")
                     if preds:
                         table_preds = []
                         for item in preds:
@@ -224,6 +253,7 @@ if page == "🛠️ レース分析＆AI予測":
                             name = item.get("horse_name", "-")
                             rate = item.get("predicted_win_rate", 0)
                             odds = item.get("current_odds", 1.0)
+                            trend = item.get("condition_trend", "-")
                             
                             kelly = calculate_kelly_bet(rate, odds, initial_bankroll, kelly_fraction)
                             
@@ -233,10 +263,11 @@ if page == "🛠️ レース分析＆AI予測":
                                 "馬名": name,
                                 "AI予測勝率": f"{rate*100:.1f}%",
                                 "単勝オッズ": f"{odds}倍",
+                                "調子トレンド": trend,
                                 "期待値(EV)": kelly["ev"],
                                 "単勝判定": "🔥 買い" if kelly["ev"] > 1.0 else "⏸️ 見送り",
                                 "推奨購入額": f"¥{kelly['bet_amount']:,}",
-                                "調教内容（タイム・強度）＆上がり3F解析": item.get("reason", "")
+                                "調教内容・過去走上がり解析": item.get("reason", "")
                             })
                         df_preds = pd.DataFrame(table_preds)
                         st.dataframe(df_preds, use_container_width=True)
