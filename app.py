@@ -158,16 +158,37 @@ elif page == "🔮 今週末の予測・投票":
     st.dataframe(df.style.apply(highlight_action, axis=1), use_container_width=True)
 
 elif page == "🛠️ APIテスト":
-    st.title("🛠️ Gemini 3.5 API 接続テスト")
-    st.write("実際のレース情報をテキストで入力し、JSONで勝率が返ってくるかテストします。")
+    st.title("🛠️ 全自動スクレイピング＆予測テスト")
+    st.write("netkeibaなどの出馬表URLを入力すると、Pythonが自動でWebページを取得し、AIが解析します。")
     
-    sample_text = "東京11R 芝1600m 良馬場。対象馬は前走大外枠で出遅れながらも上がり最速で0.2秒差の4着。今回は内枠に入り、得意な左回り。"
-    user_input = st.text_area("レース情報入力", value=sample_text, height=100)
+    target_url = st.text_input("出馬表URLを入力してください", value="https://race.netkeiba.com/race/shutuba.html?race_id=202605040301&rf=race_list")
     
-    if st.button("Gemini-3.5-Flashで予測を実行"):
-        if GOOGLE_API_KEY == "ここにAI StudioのAPIキーを入力":
-            st.error("ソースコード上部の `GOOGLE_API_KEY` を設定してください。")
+    if st.button("データ取得＆Gemini分析を実行"):
+        if not target_url:
+            st.warning("URLを入力してください。")
         else:
-            with st.spinner('予測中...'):
-                result = get_gemini_prediction(user_input)
-                st.json(result)
+            with st.spinner('1/2 ウェブサイトから馬柱データを取得中...'):
+                try:
+                    # Python側でWebページを取得
+                    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+                    response = requests.get(target_url, headers=headers, timeout=10)
+                    response.encoding = 'euc-jp' # netkeibaの文字コード
+                    
+                    soup = BeautifulSoup(response.text, 'html.parser')
+                    
+                    # 不要なタグ（JavascriptやCSS）を排除
+                    for script in soup(["script", "style"]):
+                        script.extract()
+                    
+                    # 抽出したテキストを取得
+                    race_text = soup.get_text(separator=' ', strip=True)
+                    
+                    st.success("データ取得成功！Geminiで勝率を分析中...")
+                    
+                    # テキスト化したデータをGeminiに渡す
+                    with st.spinner('2/2 Geminiで勝率と期待値を算出中...'):
+                        result = get_gemini_prediction(race_text)
+                        st.json(result)
+                        
+                except Exception as e:
+                    st.error(f"データ取得エラー: {e}")
