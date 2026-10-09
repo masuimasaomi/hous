@@ -95,7 +95,7 @@ def get_gemini_prediction(combined_race_text):
     """
     try:
         model = genai.GenerativeModel(
-            'gemini-1.5-flash',
+            'gemini-3.5-flash',
             system_instruction=system_prompt
         )
         generation_config = genai.GenerationConfig(
