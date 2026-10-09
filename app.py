@@ -95,7 +95,7 @@ def get_gemini_prediction(combined_race_text):
     """
     try:
         model = genai.GenerativeModel(
-            'gemini-3.5-flash',
+            'gemini-1.5-flash',
             system_instruction=system_prompt
         )
         generation_config = genai.GenerationConfig(
@@ -142,8 +142,117 @@ def calculate_kelly_bet(predicted_win_rate, odds, bankroll, kelly_fraction=0.25)
 st.sidebar.title("🏇 AI競馬 ROIシステム")
 page = st.sidebar.radio("メニュー", ["🛠️ レース分析＆AI予測", "📈 バックテスト分析"])
 
-# 修正箇所（146行目〜149行目付近）
 st.sidebar.markdown("---")
 st.sidebar.header("⚙️ 資金管理設定")
 initial_bankroll = st.sidebar.number_input("現在資金 (円)", min_value=10000, value=100000, step=10000)
 kelly_fraction = st.sidebar.slider("ケリー係数 (安全率)", min_value=0.1, max_value=1.0, value=0.25, step=0.05)
+
+if page == "🛠️ レース分析＆AI予測":
+    st.title("🎯 AI全自動分析（出馬表＋過去3走成績＋調教データ統合解析）")
+    st.write("出馬表URLを入力すると、Pythonが自動で「過去3走データ」と「調教データ」を読み込んで分析します。")
+    
+    target_url = st.text_input("出馬表URLを入力", value="https://race.netkeiba.com/race/shutuba.html?race_id=202605040301&rf=race_list")
+    
+    if st.button("過去走＋調教＋オッズを総合AI分析"):
+        if not target_url:
+            st.warning("URLを入力してください。")
+        elif not GOOGLE_API_KEY:
+            st.error("APIキーが設定されていません。Streamlit CloudのSecretsを確認してください。")
+        else:
+            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+            
+            with st.spinner('1/3 過去3走データを含む出馬表を取得中...'):
+                try:
+                    res_shutuba = requests.get(target_url, headers=headers, timeout=10)
+                    soup_shutuba = BeautifulSoup(res_shutuba.content, 'html.parser', from_encoding='euc-jp')
+                    
+                    for tag in soup_shutuba(["script", "style", "noscript", "iframe"]):
+                        tag.extract()
+                    
+                    shutuba_table = soup_shutuba.find('table', class_='Shutuba_Table')
+                    race_title = soup_shutuba.find('div', class_='RaceName') or soup_shutuba.find('h1', class_='RaceName')
+                    race_name = race_title.get_text(strip=True) if race_title else "対象レース"
+                    
+                    shutuba_text = shutuba_table.get_text(separator=' ', strip=True) if shutuba_table else soup_shutuba.get_text(separator=' ', strip=True)
+                except Exception as e:
+                    st.error(f"出馬表の取得に失敗しました: {e}")
+                    st.stop()
+
+            with st.spinner('2/3 追い切り・調教データを自動取得中...'):
+                try:
+                    oikiri_url = target_url.replace("shutuba.html", "oikiri.html")
+                    res_oikiri = requests.get(oikiri_url, headers=headers, timeout=10)
+                    soup_oikiri = BeautifulSoup(res_oikiri.content, 'html.parser', from_encoding='euc-jp')
+                    
+                    for tag in soup_oikiri(["script", "style", "noscript", "iframe"]):
+                        tag.extract()
+                    
+                    oikiri_table = soup_oikiri.find('table', class_='Oikiri_Table') or soup_oikiri.find('div', class_='OikiriData')
+                    oikiri_text = oikiri_table.get_text(separator=' ', strip=True) if oikiri_table else soup_oikiri.get_text(separator=' ', strip=True)
+                    st.success("過去3走データ ＆ 調教データを正常取得！")
+                except Exception as e:
+                    oikiri_text = "※調教データの取得スキップ（データなし）"
+
+            combined_race_text = f"【レース名】: {race_name}\n\n【出馬表＆過去3走データ】:\n{shutuba_text}\n\n【調教・追い切りデータ】:\n{oikiri_text}"
+
+            with st.spinner('3/3 Geminiで（過去3走×調教×オッズ）を分析中...'):
+                res = get_gemini_prediction(combined_race_text)
+                
+                if "error" in res:
+                    st.error(f"分析エラー: {res['error']}")
+                else:
+                    st.subheader(f"📊 【{res.get('race_name', race_name)}】 分析結果")
+                    
+                    st.markdown("### 🏇 出走馬・印別予測勝率 (過去3走＆調教反映)")
+                    preds = res.get("predictions", [])
+                    if preds:
+                        table_preds = []
+                        for item in preds:
+                            mark = item.get("mark", "-")
+                            num = item.get("horse_number", "-")
+                            name = item.get("horse_name", "-")
+                            rate = item.get("predicted_win_rate", 0)
+                            odds = item.get("current_odds", 1.0)
+                            
+                            kelly = calculate_kelly_bet(rate, odds, initial_bankroll, kelly_fraction)
+                            
+                            table_preds.append({
+                                "印": mark,
+                                "馬番": num,
+                                "馬名": name,
+                                "AI予測勝率": f"{rate*100:.1f}%",
+                                "単勝オッズ": f"{odds}倍",
+                                "期待値(EV)": kelly["ev"],
+                                "単勝判定": "🔥 買い" if kelly["ev"] > 1.0 else "⏸️ 見送り",
+                                "推奨購入額": f"¥{kelly['bet_amount']:,}",
+                                "評価・過去走＆調教コメント": item.get("reason", "")
+                            })
+                        df_preds = pd.DataFrame(table_preds)
+                        st.dataframe(df_preds, use_container_width=True)
+                    
+                    st.markdown("### 🎟️ おすすめ馬連ペア（総合期待値順）")
+                    umaren_list = res.get("recommended_umaren", [])
+                    if umaren_list:
+                        table_umaren = []
+                        for item in umaren_list:
+                            combo = item.get("combination")
+                            rate = item.get("predicted_rate", 0)
+                            odds = item.get("current_odds", 1.0)
+                            
+                            kelly = calculate_kelly_bet(rate, odds, initial_bankroll, kelly_fraction)
+                            
+                            table_umaren.append({
+                                "馬連ペア": combo,
+                                "的中確率": f"{rate*100:.1f}%",
+                                "想定オッズ": f"{odds}倍",
+                                "期待値(EV)": kelly["ev"],
+                                "馬連判定": "🔥 買い" if kelly["ev"] > 1.0 else "⏸️ 見送り",
+                                "推奨購入額": f"¥{kelly['bet_amount']:,}",
+                                "理由": item.get("reason", "")
+                            })
+                        df_umaren = pd.DataFrame(table_umaren)
+                        st.dataframe(df_umaren, use_container_width=True)
+
+elif page == "📈 バックテスト分析":
+    st.title("📈 バックテスト結果")
+    st.write("過去データのシミュレーション表示エリアです。")
