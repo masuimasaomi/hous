@@ -20,17 +20,17 @@ if GOOGLE_API_KEY:
 # 1. AI予測 & 資金管理ロジック
 # ==========================================
 def get_gemini_prediction(combined_race_text):
-    """上がり3Fの速さを重視したAI勝率＆印の算出"""
+    """Gemini 3.5 Flash による上がり3F・調教・過去走の超高精度統合解析"""
     system_prompt = """
     あなたは競馬の確率論・末脚（上がり3F）データ分析・調教分析に精通したプロのデータサイエンティスト・トラックマンです。
-    提供された【出馬表データ（過去3走成績含む）】および【調教データ】を精査し、各馬の実質勝率（1着確率）と印、馬連推奨を分析してください。
+    提供された【競馬新聞・出馬表データ（過去3走成績・上がり3F・通過順含む）】および【調教データ】を精査し、各馬の実質勝率（1着確率）と印、馬連推奨を分析してください。
 
-    【最重要加点ポイント（上がり3F重視）】
+    【最重要加点ポイント（上がり3F＆競馬新聞データ重視）】
     1. 上がり3F（スパート力）評価（最優先）:
-       - 「前走の上がり3Fタイム」および「過去3走の平均上がり3Fタイム」がメンバー内で上位（速い）馬に**非常に高いポイント（勝率評価）を割り振ってください**。
-       - 前走・過去3走で「上がり最速（1位）」「上がり2位」を記録している馬は、展開不向きによる敗戦（展開不利・展開負け）でも強く加点評価してください。
-    2. 調教データの掛け合わせ:
-       - 最終追い切りのラスト1ハロン（11秒台前半など）の伸び脚を上がり3F適性と連動して評価してください。
+       - 新聞データに含まれる「前走上がり3Fタイム」「過去3走の上がり3F平均」「上がり順位（1位・2位等）」を緻密に算出し、メンバー内で上位（速い）馬に**非常に高い勝率評価・ポイント**を与えてください。
+       - 前走・過去走で「上がり最速」を記録している馬は、展開不向きによる敗戦（展開不利）でも高く評価してください。
+    2. 展開・脚質と調教の掛け合わせ:
+       - 過去走の通過順から展開を予測し、調教の最終追い切り（坂路・CWの終い伸び）と合体させて状態面を判断してください。
     3. 馬名・馬番の正確性:
        - 必ずテキスト内に存在する「実際の馬番」と「実際の馬名」のみを使用してください。
 
@@ -50,7 +50,7 @@ def get_gemini_prediction(combined_race_text):
           "horse_name": "実際の馬名",
           "predicted_win_rate": 0.30,
           "current_odds": 3.2,
-          "reason": "【上がり3F: 前走最速33.8秒 / 過去3走平均最速】 メンバー屈指の末脚。東京の長い直線で差し切り濃厚"
+          "reason": "【新聞データ解析: 前走上がり最速33.8秒 / 過去3走上がり平均1位】 圧倒的な末脚性能。東京の長い直線で差し切り濃厚"
         },
         {
           "mark": "◯",
@@ -58,7 +58,7 @@ def get_gemini_prediction(combined_race_text):
           "horse_name": "実際の馬名",
           "predicted_win_rate": 0.18,
           "current_odds": 4.8,
-          "reason": "【上がり3F: 過去3走平均2位】 安定して上がり上位をマーク。今回も好勝負"
+          "reason": "【新聞データ解析: 過去3走上がり平均2位】 安定して上がり上位をマーク。今回も好勝負"
         },
         {
           "mark": "▲",
@@ -66,7 +66,7 @@ def get_gemini_prediction(combined_race_text):
           "horse_name": "実際の馬名",
           "predicted_win_rate": 0.14,
           "current_odds": 15.0,
-          "reason": "【上がり3F: 前走上がり2位で展開不向きの敗戦】 人気はないが末脚性能が高く、オッズ的に大穴妙味あり"
+          "reason": "【新聞データ解析: 前走上がり2位で展開不向き】 人気はないが新聞の過去走データから末脚性能が高く、大穴妙味あり"
         },
         {
           "mark": "△",
@@ -74,7 +74,7 @@ def get_gemini_prediction(combined_race_text):
           "horse_name": "実際の馬名",
           "predicted_win_rate": 0.06,
           "current_odds": 18.0,
-          "reason": "【上がり3F: 過去3走安定】 連下・3着候補"
+          "reason": "【新聞データ解析: 過去3走安定】 連下・3着候補"
         }
       ],
       "recommended_umaren": [
@@ -94,6 +94,7 @@ def get_gemini_prediction(combined_race_text):
     }
     """
     try:
+        # モデル名を gemini-3.5-flash に更新
         model = genai.GenerativeModel(
             'gemini-3.5-flash',
             system_instruction=system_prompt
@@ -148,12 +149,13 @@ initial_bankroll = st.sidebar.number_input("現在資金 (円)", min_value=10000
 kelly_fraction = st.sidebar.slider("ケリー係数 (安全率)", min_value=0.1, max_value=1.0, value=0.25, step=0.05)
 
 if page == "🛠️ レース分析＆AI予測":
-    st.title("🎯 AI全自動分析（末脚・上がり3F重視モデル）")
-    st.write("前走・過去3走の上がり3Fタイムを重視し、直線での差し切り・追い込み適性が高い馬を高評価します。")
+    st.title("🎯 AI全自動分析（Gemini 3.5 Flash 搭載）")
+    st.write("競馬新聞URL（newspaper.html）または通常の出馬表URLを入力すると、高密度データを解析します。")
     
-    target_url = st.text_input("出馬表URLを入力", value="https://race.netkeiba.com/race/shutuba.html?race_id=202605040301&rf=race_list")
+    default_url = "https://race.netkeiba.com/race/newspaper.html?m=riot-shutuba-past&race_id=202605040401"
+    target_url = st.text_input("出馬表 / 競馬新聞URLを入力", value=default_url)
     
-    if st.button("過去走上がり3F＋調教＋オッズを総合AI分析"):
+    if st.button("競馬新聞データ＋上がり3F＋調教をAI分析"):
         if not target_url:
             st.warning("URLを入力してください。")
         elif not GOOGLE_API_KEY:
@@ -161,7 +163,7 @@ if page == "🛠️ レース分析＆AI予測":
         else:
             headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
             
-            with st.spinner('1/3 過去3走上がりデータを含む出馬表を取得中...'):
+            with st.spinner('1/3 競馬新聞データを全取得中...'):
                 try:
                     res_shutuba = requests.get(target_url, headers=headers, timeout=10)
                     soup_shutuba = BeautifulSoup(res_shutuba.content, 'html.parser', from_encoding='euc-jp')
@@ -169,18 +171,19 @@ if page == "🛠️ レース分析＆AI予測":
                     for tag in soup_shutuba(["script", "style", "noscript", "iframe"]):
                         tag.extract()
                     
-                    shutuba_table = soup_shutuba.find('table', class_='Shutuba_Table')
                     race_title = soup_shutuba.find('div', class_='RaceName') or soup_shutuba.find('h1', class_='RaceName')
                     race_name = race_title.get_text(strip=True) if race_title else "対象レース"
                     
-                    shutuba_text = shutuba_table.get_text(separator=' ', strip=True) if shutuba_table else soup_shutuba.get_text(separator=' ', strip=True)
+                    newspaper_table = soup_shutuba.find('div', id='RaceNewspaper') or soup_shutuba.find('table', class_='Shutuba_Table') or soup_shutuba.find('table')
+                    
+                    shutuba_text = newspaper_table.get_text(separator=' ', strip=True) if newspaper_table else soup_shutuba.get_text(separator=' ', strip=True)
                 except Exception as e:
-                    st.error(f"出馬表の取得に失敗しました: {e}")
+                    st.error(f"データの取得に失敗しました: {e}")
                     st.stop()
 
-            with st.spinner('2/3 追い切り・調教データを自動取得中...'):
+            with st.spinner('2/3 追い切り・調教データを自動連動取得中...'):
                 try:
-                    oikiri_url = target_url.replace("shutuba.html", "oikiri.html")
+                    oikiri_url = target_url.replace("newspaper.html", "oikiri.html").replace("shutuba.html", "oikiri.html")
                     res_oikiri = requests.get(oikiri_url, headers=headers, timeout=10)
                     soup_oikiri = BeautifulSoup(res_oikiri.content, 'html.parser', from_encoding='euc-jp')
                     
@@ -189,13 +192,13 @@ if page == "🛠️ レース分析＆AI予測":
                     
                     oikiri_table = soup_oikiri.find('table', class_='Oikiri_Table') or soup_oikiri.find('div', class_='OikiriData')
                     oikiri_text = oikiri_table.get_text(separator=' ', strip=True) if oikiri_table else soup_oikiri.get_text(separator=' ', strip=True)
-                    st.success("上がりデータ ＆ 調教データを正常取得！")
+                    st.success("競馬新聞高密度データ ＆ 調教データを正常取得！")
                 except Exception as e:
                     oikiri_text = "※調教データの取得スキップ（データなし）"
 
-            combined_race_text = f"【レース名】: {race_name}\n\n【出馬表＆過去3走データ】:\n{shutuba_text}\n\n【調教・追い切りデータ】:\n{oikiri_text}"
+            combined_race_text = f"【レース名】: {race_name}\n\n【競馬新聞・過去走・上がり3Fデータ】:\n{shutuba_text}\n\n【調教・追い切りデータ】:\n{oikiri_text}"
 
-            with st.spinner('3/3 Gemini（3.5 Flash）で上がり3F重視の予想を展開中...'):
+            with st.spinner('3/3 Gemini 3.5 Flash で新聞データ＆上がり3F分析を実行中...'):
                 res = get_gemini_prediction(combined_race_text)
                 
                 if "error" in res:
@@ -203,7 +206,7 @@ if page == "🛠️ レース分析＆AI予測":
                 else:
                     st.subheader(f"📊 【{res.get('race_name', race_name)}】 分析結果")
                     
-                    st.markdown("### 🏇 出走馬・印別予測勝率 (上がり3F＋調教反映)")
+                    st.markdown("### 🏇 出走馬・印別予測勝率 (新聞上がり3F＆調教反映)")
                     preds = res.get("predictions", [])
                     if preds:
                         table_preds = []
@@ -225,7 +228,7 @@ if page == "🛠️ レース分析＆AI予測":
                                 "期待値(EV)": kelly["ev"],
                                 "単勝判定": "🔥 買い" if kelly["ev"] > 1.0 else "⏸️ 見送り",
                                 "推奨購入額": f"¥{kelly['bet_amount']:,}",
-                                "評価・上がり3F＆調教コメント": item.get("reason", "")
+                                "新聞データ評価・上がり3F解析": item.get("reason", "")
                             })
                         df_preds = pd.DataFrame(table_preds)
                         st.dataframe(df_preds, use_container_width=True)
