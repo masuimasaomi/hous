@@ -3,43 +3,83 @@ import pandas as pd
 import numpy as np
 import json
 import os
-import requests  # ←これが抜けていたため追加
-from bs4 import BeautifulSoup  # ←こちらもセットで追加
+import requests
+from bs4 import BeautifulSoup
 import google.generativeai as genai
 
 # ==========================================
-# 0. 初期設定とAPIクライアント
+# 0. 初期設定とAPI設定
 # ==========================================
 st.set_page_config(page_title="競馬AI ROIオプティマイザ", page_icon="🏇", layout="wide")
 
-# Google AI Studioで取得したAPIキーを設定
-GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY", "ここにAI StudioのAPIキーを入力")
-genai.configure(api_key=GOOGLE_API_KEY)
+GOOGLE_API_KEY = st.secrets.get("GOOGLE_API_KEY", os.environ.get("GOOGLE_API_KEY", ""))
+if GOOGLE_API_KEY:
+    genai.configure(api_key=GOOGLE_API_KEY)
 
 # ==========================================
-# 1. コア・アルゴリズム (AI予測 & 資金管理)
+# 1. AI予測 & 資金管理ロジック
 # ==========================================
 def get_gemini_prediction(race_data_text):
-    """Geminiを使ってレースデータから実質勝率と馬連のおすすめ買い目を予測する"""
+    """Geminiで印（◎◯△▲）と各馬の予測勝率・期待値を算出"""
     system_prompt = """
     あなたは競馬の確率論に精通したプロのデータサイエンティストです。
-    提供された出馬表・レースデータから各馬の実力・展開・オッズを分析し、
-    期待値の高い「馬連のおすすめ買い目」を最大5組選定して以下のJSONフォーマットのみを出力してください。
+    提供された出馬表・レースデータから各馬の実力・展開・オッズを分析し、以下の印別に予想と実質勝率（1着確率）を算出してください。
 
+    印の定義:
+    ◎: 本命（最も勝率が高い馬）
+    ◯: 対抗（2番手に勝ち切る確率が高い馬）
+    ▲: 穴馬（オッズに対して勝率が高く期待値が大きい穴馬）
+    △: ひも（2・3着候補、複勝・馬券圏内評価の馬）
+
+    以下のJSONフォーマットのみを出力してください。
     {
       "race_name": "レース名（判明する場合）",
-      "recommended_umaren": [
+      "predictions": [
         {
-          "combination": "1 - 5",
-          "predicted_rate": 0.12,
-          "current_odds": 15.4,
-          "reason": "軸馬の安定感と対抗馬の差し脚展開が合致するため"
+          "mark": "◎",
+          "horse_number": 3,
+          "horse_name": "馬名",
+          "predicted_win_rate": 0.28,
+          "current_odds": 3.2,
+          "reason": "本命の根拠"
         },
         {
-          "combination": "1 - 8",
+          "mark": "◯",
+          "horse_number": 7,
+          "horse_name": "馬名",
+          "predicted_win_rate": 0.18,
+          "current_odds": 5.4,
+          "reason": "対抗の根拠"
+        },
+        {
+          "mark": "▲",
+          "horse_number": 12,
+          "horse_name": "馬名",
+          "predicted_win_rate": 0.10,
+          "current_odds": 18.5,
+          "reason": "穴馬の根拠"
+        },
+        {
+          "mark": "△",
+          "horse_number": 5,
+          "horse_name": "馬名",
+          "predicted_win_rate": 0.06,
+          "current_odds": 12.0,
+          "reason": "ひもの根拠"
+        }
+      ],
+      "recommended_umaren": [
+        {
+          "combination": "3 - 7",
+          "predicted_rate": 0.14,
+          "current_odds": 12.5,
+          "reason": "本命◎と対抗◯の組み合わせ"
+        },
+        {
+          "combination": "3 - 12",
           "predicted_rate": 0.08,
-          "current_odds": 28.0,
-          "reason": "穴馬の好走傾向あり"
+          "current_odds": 35.0,
+          "reason": "本命◎と穴▲の高期待値組み合わせ"
         }
       ]
     }
@@ -62,11 +102,11 @@ def get_gemini_prediction(race_data_text):
         return {"error": str(e)}
 
 def calculate_kelly_bet(predicted_win_rate, odds, bankroll, kelly_fraction=0.25):
-    """ケリー基準を用いて最適なベット額を計算する"""
+    """ケリー基準による最適ベット額計算"""
     expected_value = predicted_win_rate * odds
     
-    if expected_value <= 1.0:
-        return {"action": "見送り", "bet_amount": 0, "percentage": 0.0, "ev": expected_value}
+    if expected_value <= 1.0 or odds <= 1.0:
+        return {"action": "見送り", "bet_amount": 0, "percentage": 0.0, "ev": round(expected_value, 2)}
         
     b = odds - 1.0
     p = predicted_win_rate
@@ -74,132 +114,114 @@ def calculate_kelly_bet(predicted_win_rate, odds, bankroll, kelly_fraction=0.25)
     
     f = (b * p - q) / b
     adjusted_fraction = f * kelly_fraction
-    
     bet_amount = int((bankroll * adjusted_fraction) // 100 * 100)
     
     return {
         "action": "買い" if bet_amount > 0 else "見送り",
-        "bet_amount": bet_amount,
-        "percentage": round(adjusted_fraction * 100, 2),
+        "bet_amount": max(bet_amount, 0),
+        "percentage": round(max(adjusted_fraction, 0) * 100, 2),
         "ev": round(expected_value, 2)
     }
 
 # ==========================================
-# 2. データ準備 (※UI表示用のダミーデータ)
-# ==========================================
-@st.cache_data
-def load_mock_backtest_data(initial_bankroll, kelly_fraction):
-    dates = pd.date_range(start="2025-01-01", periods=100, freq="W-SUN")
-    bankroll = initial_bankroll
-    history = []
-    
-    for d in dates:
-        is_win = np.random.rand() < 0.22 
-        bet_amount = int((bankroll * kelly_fraction * 0.1) // 100 * 100)
-        bankroll -= bet_amount
-        return_amount = int(bet_amount * np.random.uniform(5.0, 12.0)) if is_win else 0
-        bankroll += return_amount
-            
-        history.append({"日付": d, "購入額": bet_amount, "払戻額": return_amount, "資金残高": bankroll})
-        
-    df = pd.DataFrame(history)
-    summary = {
-        "初期資金": initial_bankroll,
-        "最終資金": int(bankroll),
-        "回収率 (ROI)": f"{((df['払戻額'].sum() / df['購入額'].sum()) * 100):.1f}%" if df['購入額'].sum() > 0 else "0%",
-        "最大ドローダウン": "-28.4%",
-    }
-    return summary, df
-
-def load_weekend_predictions(current_bankroll, kelly_fraction):
-    raw_data = [
-        {"レース": "東京11R", "馬番": 7, "馬名": "ジェミニフラッシュ", "AI勝率": 0.185, "オッズ": 8.5},
-        {"レース": "東京12R", "馬番": 3, "馬名": "データストーム", "AI勝率": 0.100, "オッズ": 5.2},
-        {"レース": "京都11R", "馬番": 12, "馬名": "ケリーインパクト", "AI勝率": 0.080, "オッズ": 15.0},
-    ]
-    
-    results = []
-    for d in raw_data:
-        kelly = calculate_kelly_bet(d["AI勝率"], d["オッズ"], current_bankroll, kelly_fraction)
-        results.append({
-            "レース": d["レース"],
-            "馬番": d["馬番"],
-            "馬名": d["馬名"],
-            "AI予測勝率": f"{d['AI勝率']*100:.1f}%",
-            "オッズ": d["オッズ"],
-            "期待値 (EV)": kelly["ev"],
-            "指示": kelly["action"],
-            "推奨投資割合": f"{kelly['percentage']}%",
-            "推奨購入額": f"¥{kelly['bet_amount']:,}"
-        })
-    return pd.DataFrame(results)
-
-# ==========================================
-# 3. UIレイアウト
+# 2. UI画面構成
 # ==========================================
 st.sidebar.title("🏇 AI競馬 ROIシステム")
-page = st.sidebar.radio("メニュー", ["📈 バックテスト分析", "🔮 今週末の予測・投票", "🛠️ APIテスト"])
+page = st.sidebar.radio("メニュー", ["🛠️ レース分析＆AI予測", "📈 バックテスト分析"])
 
 st.sidebar.markdown("---")
 st.sidebar.header("⚙️ 資金管理設定")
-initial_bankroll = st.sidebar.number_input("初期資金 / 現在資金 (円)", min_value=10000, value=100000, step=10000)
-kelly_fraction = st.sidebar.slider("ケリー係数", min_value=0.1, max_value=1.0, value=0.25, step=0.05)
+initial_bankroll = st.sidebar.number_input("現在資金 (円)", min_value=10000, value=100000, step=10000)
+kelly_fraction = st.sidebar.slider("ケリー係数 (安全率)", min_value=0.1, max_value=1.0, value=0.25, step=0.05)
 
-if page == "📈 バックテスト分析":
-    st.title("📈 バックテスト結果")
-    summary, history_df = load_mock_backtest_data(initial_bankroll, kelly_fraction)
+if page == "🛠️ レース分析＆AI予測":
+    st.title("🎯 AI印別評価・勝率分析＆馬連期待値")
+    st.write("netkeibaなどの出馬表URLを入力すると、AIが「◎・◯・▲・△」の勝率と期待値を自動算出します。")
     
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("初期資金", f"¥{summary['初期資金']:,}")
-    col2.metric("最終資金", f"¥{summary['最終資金']:,}", f"{summary['最終資金'] - summary['初期資金']:,} 円")
-    col3.metric("回収率 (ROI)", summary['回収率 (ROI)'])
-    col4.metric("最大ドローダウン", summary['最大ドローダウン'], delta_color="inverse")
+    target_url = st.text_input("出馬表URLを入力", value="https://race.netkeiba.com/race/shutuba.html?race_id=202605040301&rf=race_list")
     
-    st.line_chart(history_df.set_index("日付")["資金残高"])
-    st.dataframe(history_df, use_container_width=True)
-
-elif page == "🔮 今週末の予測・投票":
-    st.title("🔮 今週末の最適ベット額")
-    
-    df = load_weekend_predictions(initial_bankroll, kelly_fraction)
-    
-    def highlight_action(row):
-        return ['background-color: #d4edda; color: #155724'] * len(row) if row['指示'] == '買い' else ['background-color: #f8d7da; color: #721c24'] * len(row)
-
-    st.dataframe(df.style.apply(highlight_action, axis=1), use_container_width=True)
-
-elif page == "🛠️ APIテスト":
-    st.title("🛠️ 全自動スクレイピング＆予測テスト")
-    st.write("netkeibaなどの出馬表URLを入力すると、Pythonが自動でWebページを取得し、AIが解析します。")
-    
-    target_url = st.text_input("出馬表URLを入力してください", value="https://race.netkeiba.com/race/shutuba.html?race_id=202605040301&rf=race_list")
-    
-    if st.button("データ取得＆Gemini分析を実行"):
+    if st.button("AI予想・勝率分析を実行"):
         if not target_url:
             st.warning("URLを入力してください。")
+        elif not GOOGLE_API_KEY:
+            st.error("APIキーが設定されていません。Streamlit CloudのSecretsを確認してください。")
         else:
-            with st.spinner('1/2 ウェブサイトから馬柱データを取得中...'):
+            with st.spinner('1/2 レース出馬表を取得中...'):
                 try:
-                    # Python側でWebページを取得
                     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
                     response = requests.get(target_url, headers=headers, timeout=10)
-                    response.encoding = 'euc-jp' # netkeibaの文字コード
-                    
+                    response.encoding = 'euc-jp'
                     soup = BeautifulSoup(response.text, 'html.parser')
                     
-                    # 不要なタグ（JavascriptやCSS）を排除
                     for script in soup(["script", "style"]):
                         script.extract()
-                    
-                    # 抽出したテキストを取得
                     race_text = soup.get_text(separator=' ', strip=True)
                     
-                    st.success("データ取得成功！Geminiで勝率を分析中...")
+                    st.success("データ取得完了！Geminiで印・勝率・馬連を分析中...")
                     
-                    # テキスト化したデータをGeminiに渡す
-                    with st.spinner('2/2 Geminiで勝率と期待値を算出中...'):
-                        result = get_gemini_prediction(race_text)
-                        st.json(result)
+                    with st.spinner('2/2 勝率＆推奨購入額を算出中...'):
+                        res = get_gemini_prediction(race_text)
                         
+                        if "error" in res:
+                            st.error(f"分析エラー: {res['error']}")
+                        else:
+                            st.subheader(f"📊 【{res.get('race_name', '対象レース')}】 分析結果")
+                            
+                            # 1. 各馬の印と勝率テーブル
+                            st.markdown("### 🏇 単勝評価・印別予測勝率")
+                            preds = res.get("predictions", [])
+                            if preds:
+                                table_preds = []
+                                for item in preds:
+                                    mark = item.get("mark", "-")
+                                    num = item.get("horse_number", "-")
+                                    name = item.get("horse_name", "-")
+                                    rate = item.get("predicted_win_rate", 0)
+                                    odds = item.get("current_odds", 1.0)
+                                    
+                                    kelly = calculate_kelly_bet(rate, odds, initial_bankroll, kelly_fraction)
+                                    
+                                    table_preds.append({
+                                        "印": mark,
+                                        "馬番": num,
+                                        "馬名": name,
+                                        "AI予測勝率": f"{rate*100:.1f}%",
+                                        "単勝オッズ": f"{odds}倍",
+                                        "期待値(EV)": kelly["ev"],
+                                        "単勝判定": "🔥 買い" if kelly["ev"] > 1.0 else "⏸️ 見送り",
+                                        "推奨購入額": f"¥{kelly['bet_amount']:,}",
+                                        "評価根拠": item.get("reason", "")
+                                    })
+                                df_preds = pd.DataFrame(table_preds)
+                                st.dataframe(df_preds, use_container_width=True)
+                            
+                            # 2. 馬連のおすすめ
+                            st.markdown("### 🎟️ おすすめ馬連ペア（期待値順）")
+                            umaren_list = res.get("recommended_umaren", [])
+                            if umaren_list:
+                                table_umaren = []
+                                for item in umaren_list:
+                                    combo = item.get("combination")
+                                    rate = item.get("predicted_rate", 0)
+                                    odds = item.get("current_odds", 1.0)
+                                    
+                                    kelly = calculate_kelly_bet(rate, odds, initial_bankroll, kelly_fraction)
+                                    
+                                    table_umaren.append({
+                                        "馬連ペア": combo,
+                                        "的中確率": f"{rate*100:.1f}%",
+                                        "想定オッズ": f"{odds}倍",
+                                        "期待値(EV)": kelly["ev"],
+                                        "馬連判定": "🔥 買い" if kelly["ev"] > 1.0 else "⏸️ 見送り",
+                                        "推奨購入額": f"¥{kelly['bet_amount']:,}",
+                                        "理由": item.get("reason", "")
+                                    })
+                                df_umaren = pd.DataFrame(table_umaren)
+                                st.dataframe(df_umaren, use_container_width=True)
+
                 except Exception as e:
-                    st.error(f"データ取得エラー: {e}")
+                    st.error(f"処理エラー: {e}")
+
+elif page == "📈 バックテスト分析":
+    st.title("📈 バックテスト結果")
+    st.write("シミュレーション結果を表示します。")
