@@ -20,33 +20,37 @@ if GOOGLE_API_KEY:
 # 1. AI予測 & 資金管理ロジック
 # ==========================================
 def get_gemini_prediction(combined_race_text):
-    """Gemini 3.5 Flash による同距離成績比較＋調子視覚化＋上がり3F＋調教の統合解析"""
+    """Gemini 3.5 Flash による展開予測＋同距離比較＋調子視覚化＋上がり3F＋調教の統合解析"""
     system_prompt = """
-    あなたは競馬の確率論・コース適性・同距離データ分析・調教時計解析に精通したプロのデータサイエンティストです。
-    提供された【競馬新聞・出馬表データ（過去走成績・同距離実績含む）】および【調教データ】を精査し、各馬の実質勝率（1着確率）、同距離競走における比較評価、調子トレンド、レース荒れ度、印、馬連推奨を分析してください。
+    あなたは競馬の確率論・展開（ペース）読み・コース適性・調教時計解析に精通したプロのデータサイエンティストです。
+    提供された【競馬新聞・出馬表データ（通過順・過去走・同距離実績含む）】および【調教データ】を精査し、レース展開予測、各馬の実質勝率（1着確率）、同距離競走における比較評価、調子トレンド、レース荒れ度、印、馬連推奨を分析してください。
 
     【最重要解析ポイント】
-    1. 同距離競走（コース・距離適性）の比較解析（重要視）:
-       - 今回のレース距離と同距離（または類似距離）における過去走の「走破タイム」「上がり3F」「着順実績」を抽出し、比較評価してください。
-       - 同距離での実績が豊富な馬（「同距離得意」「同距離1位タイム保有」）には勝率ポイントを高く与え、距離延長・短縮による不安要素も考慮してください。
-    2. 調子視覚化（過去走上がり3Fタイム推移）:
+    1. レース展開（ペース＆隊列）予測（新規追加）:
+       - 出走馬の過去走の通過順（逃げ・先行馬の頭数）から「予想ペース（ハイペース/ミドルペース/スローペース）」を判定してください。
+       - 展開利（「ハイペースで上がり3F最速の差し馬に展開絶好」「単騎逃げで前残り濃厚」等）を受ける馬を算定してください。
+    2. 同距離競走（コース・距離適性）の比較解析:
+       - 今回と同距離における過去走の「走破タイム」「上がり3F」「着順実績」を抽出し、比較評価してください。
+    3. 調子視覚化（過去走上がり3Fタイム推移）:
        - 印（◎, ◯, ▲）をつけた主要馬について、過去走（最大10走分）の「上がり3Fタイム（秒）」を数値配列として抽出してください。
-    3. 調教データの評価（内容・数字重視）:
+    4. 調教データの評価（内容・数字重視）:
        - 具体的調教内容（コース・強さ・タイム・ラスト1F・併せ馬結果）を最優先で評価してください。
-    4. 馬名・馬番の正確性:
+    5. 馬名・馬番の正確性:
        - 必ずテキスト内に存在する「実際の馬番」「実際の馬名」のみを使用してください。
 
     印の定義:
-    ◎: 本命（同距離実績＋メンバー最速クラスの上がり3F性能＋調教最優秀で最も勝ち切る確率が高い馬）
-    ◯: 対抗（2番手に同距離適性・上がり性能・調教内容が良い馬）
-    ▲: 穴馬（同距離実績はあるが人気薄、または調教一変で激走期待の穴馬）
-    △: ひも（掲示板級の同距離実績を持ち2・3着候補の馬）
+    ◎: 本命（展開利＋同距離実績＋メンバー最速クラスの上がり3F性能＋調教最優秀の馬）
+    ◯: 対抗（2番手に展開適性・同距離適性・調教内容が良い馬）
+    ▲: 穴馬（展開ハマリの激走期待や調教一変がある期待値の大きい穴馬）
+    △: ひも（掲示板級の実績を持ち展開次第で2・3着候補の馬）
 
     以下のJSONフォーマットのみを出力してください。
     {
       "race_name": "レース名（例: 東京1R 2歳未勝利）",
       "volatility_level": "🔥🔥🔥 超高波乱",
       "volatility_reason": "上位人気と同距離実績馬の差が小さく、調教時計も僅差の混戦。",
+      "pace_prediction": "🔥 ハイペース想定（差し・追込有利）",
+      "pace_reason": "同型（逃げ馬）が3頭競合する配置。前半からタイムが速くなり、直線で上がり3F上位の差し馬に絶好の展開利が生まれる。",
       "predictions": [
         {
           "mark": "◎",
@@ -57,7 +61,7 @@ def get_gemini_prediction(combined_race_text):
           "same_distance_eval": "🏆 同距離最高実績",
           "condition_trend": "🔥 急上昇（絶好調）",
           "recent_3f_history": [35.1, 34.5, 34.0, 33.6],
-          "reason": "【同距離実績: 1600mで勝率50% / 上がり最速33.6秒】 同距離での走破タイム・上がり性能がメンバー随一。【調教: CW 6F 81.2-11.2 (馬ナリ)】"
+          "reason": "【展開絶好: ハイペース想定で上がり3F最速脚が炸裂】 同距離走破タイム・上がり性能が随一。【調教: CW 6F 81.2-11.2 (馬ナリ)】"
         },
         {
           "mark": "◯",
@@ -68,7 +72,7 @@ def get_gemini_prediction(combined_race_text):
           "same_distance_eval": "◎ 同距離得意",
           "condition_trend": "安定ピーク",
           "recent_3f_history": [34.2, 34.0, 34.1, 33.9],
-          "reason": "【同距離実績: 過去2勝がすべて同距離】 距離適性は文句なし。【調教: 坂路 52.4-11.8 (強め)】"
+          "reason": "【展開対抗: 差し馬群の直後から好位追走】 距離適性抜群。【調教: 坂路 52.4-11.8 (強め)】"
         },
         {
           "mark": "▲",
@@ -79,7 +83,7 @@ def get_gemini_prediction(combined_race_text):
           "same_distance_eval": "▲ 同距離初挑戦",
           "condition_trend": "一発の妙味あり",
           "recent_3f_history": [36.2, 35.8, 34.2],
-          "reason": "【同距離実績: 今回初の距離短縮】 上がり3F短縮傾向にあり、距離短縮で一発激走の妙味大"
+          "reason": "【展開特注: 前崩れ時の大外強襲候補】 上がり3F短縮傾向で一発激走の妙味大"
         },
         {
           "mark": "△",
@@ -90,7 +94,7 @@ def get_gemini_prediction(combined_race_text):
           "same_distance_eval": "△ 同距離掲示板級",
           "condition_trend": "平行線",
           "recent_3f_history": [35.0, 34.8, 35.2],
-          "reason": "【同距離実績: 同距離で3着2回】 連下・3着候補"
+          "reason": "【展開注意: 先行粘り込み連下】 3着候補"
         }
       ],
       "recommended_umaren": [
@@ -98,13 +102,13 @@ def get_gemini_prediction(combined_race_text):
           "combination": "1 - 2",
           "predicted_rate": 0.15,
           "current_odds": 10.5,
-          "reason": "同距離実績上位◎と◯の堅実軸太ペア"
+          "reason": "展開利受ける上がり最速◎と実力派◯の堅実軸太ペア"
         },
         {
           "combination": "1 - 5",
           "predicted_rate": 0.09,
           "current_odds": 32.0,
-          "reason": "同距離実績◎から距離変更一変期待の穴▲への高期待値ペア"
+          "reason": "ハイペース前崩れ狙いの◎-▲高期待値穴ペア"
         }
       ]
     }
@@ -164,13 +168,13 @@ initial_bankroll = st.sidebar.number_input("現在資金 (円)", min_value=10000
 kelly_fraction = st.sidebar.slider("ケリー係数 (安全率)", min_value=0.1, max_value=1.0, value=0.25, step=0.05)
 
 if page == "🛠️ レース分析＆AI予測":
-    st.title("🎯 AI全自動分析（同距離実績比較 ＆ 調子バイタル視覚化）")
-    st.write("出馬表・競馬新聞URLを入力すると、同距離レースでの過去実績やタイム・調子グラフを統合解析します。")
+    st.title("🎯 AI全自動分析（レース展開予測 ＆ 同距離比較 ＆ 調子バイタル）")
+    st.write("出馬表・競馬新聞URLを入力すると、レース展開（ペース・隊列利）や同距離適性、調子グラフを完全網羅して分析します。")
     
     default_url = "https://race.netkeiba.com/race/newspaper.html?m=riot-shutuba-past&race_id=202605040401"
     target_url = st.text_input("出馬表 / 競馬新聞URLを入力", value=default_url)
     
-    if st.button("同距離比較＋調子バイタル＋調教＋オッズを総合AI分析"):
+    if st.button("レース展開＋同距離比較＋調子バイタル＋調教＋オッズを総合AI分析"):
         if not target_url:
             st.warning("URLを入力してください。")
         elif not GOOGLE_API_KEY:
@@ -211,9 +215,9 @@ if page == "🛠️ レース分析＆AI予測":
                 except Exception as e:
                     oikiri_text = "※調教データの取得スキップ（データなし）"
 
-            combined_race_text = f"【レース名】: {race_name}\n\n【競馬新聞・過去走・同距離成績・上がり3Fデータ】:\n{shutuba_text}\n\n【調教・追い切りタイム・内容データ】:\n{oikiri_text}"
+            combined_race_text = f"【レース名】: {race_name}\n\n【競馬新聞・過去走・同距離成績・通過順（展開データ）】:\n{shutuba_text}\n\n【調教・追い切りタイム・内容データ】:\n{oikiri_text}"
 
-            with st.spinner('3/3 Gemini 3.5 Flash で同距離適性＆上がり3F・調子を分析中...'):
+            with st.spinner('3/3 Gemini 3.5 Flash でレース展開＆同距離＆調子を統合分析中...'):
                 res = get_gemini_prediction(combined_race_text)
                 
                 if "error" in res:
@@ -221,10 +225,16 @@ if page == "🛠️ レース分析＆AI予測":
                 else:
                     st.subheader(f"📊 【{res.get('race_name', race_name)}】 分析結果")
                     
-                    vol_level = res.get("volatility_level", "判定不能")
-                    vol_reason = res.get("volatility_reason", "")
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        vol_level = res.get("volatility_level", "判定不能")
+                        vol_reason = res.get("volatility_reason", "")
+                        st.info(f"⚡ **レース波乱度:** {vol_level}\n\n**【混戦理由】:** {vol_reason}")
                     
-                    st.info(f"⚡ **レース波乱度:** {vol_level}\n\n**【混戦・波乱理由】:** {vol_reason}")
+                    with col2:
+                        pace_pred = res.get("pace_prediction", "判定不能")
+                        pace_reason = res.get("pace_reason", "")
+                        st.success(f"🏁 **予想展開・ペース:** {pace_pred}\n\n**【展開解説】:** {pace_reason}")
                     
                     st.markdown("### 📈 主要馬の上がり3Fタイム推移（調子バイタル）")
                     preds = res.get("predictions", [])
@@ -248,7 +258,7 @@ if page == "🛠️ レース分析＆AI予測":
                         st.line_chart(df_chart)
                         st.caption("※折れ線グラフが下に行くほど上がり3Fが速く（末脚性能が高い）、右肩下がりなら調子上昇傾向を示します。")
 
-                    st.markdown("### 🏇 出走馬・印別予測勝率 ＆ 同距離適性評価")
+                    st.markdown("### 🏇 出走馬・印別予測勝率 ＆ 展開・同距離適性評価")
                     if preds:
                         table_preds = []
                         for item in preds:
@@ -273,7 +283,7 @@ if page == "🛠️ レース分析＆AI予測":
                                 "期待値(EV)": kelly["ev"],
                                 "単勝判定": "🔥 買い" if kelly["ev"] > 1.0 else "⏸️ 見送り",
                                 "推奨購入額": f"¥{kelly['bet_amount']:,}",
-                                "同距離成績・調教・過去走解析": item.get("reason", "")
+                                "展開・同距離成績・調教統合解析": item.get("reason", "")
                             })
                         df_preds = pd.DataFrame(table_preds)
                         st.dataframe(df_preds, use_container_width=True)
