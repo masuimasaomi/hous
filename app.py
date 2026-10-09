@@ -20,66 +20,70 @@ if GOOGLE_API_KEY:
 # 1. AI予測 & 資金管理ロジック
 # ==========================================
 def get_gemini_prediction(race_data_text):
-    """Geminiで印（◎◯△▲）と各馬の予測勝率・期待値を算出"""
+    """Geminiで実在の出馬表データから印（◎◯△▲）と勝率・期待値を算出"""
     system_prompt = """
     あなたは競馬の確率論に精通したプロのデータサイエンティストです。
-    提供された出馬表・レースデータから各馬の実力・展開・オッズを分析し、以下の印別に予想と実質勝率（1着確率）を算出してください。
+    以下に提供された【実際の出馬表テキストデータ】のみを解析し、出走馬の勝率と印、馬連推奨を分析してください。
+
+    【重要制約事項】
+    - 必ずテキスト内に存在する「実際の馬番」と「実際の馬名」のみを使用してください。架空の馬名やデータを創作することは厳禁です。
+    - 単勝オッズが取得できている場合はその数字を使用し、不明な場合は実力に応じた想定オッズで計算してください。
 
     印の定義:
-    ◎: 本命（最も勝率が高い馬）
-    ◯: 対抗（2番手に勝ち切る確率が高い馬）
-    ▲: 穴馬（オッズに対して勝率が高く期待値が大きい穴馬）
-    △: ひも（2・3着候補、複勝・馬券圏内評価の馬）
+    ◎: 本命（勝ち切る確率が最も高い馬）
+    ◯: 対抗（2番手に高い馬）
+    ▲: 穴馬（オッズに対して勝率が高く期待値が大きい馬）
+    △: ひも（2・3着候補）
 
     以下のJSONフォーマットのみを出力してください。
     {
-      "race_name": "レース名（判明する場合）",
+      "race_name": "レース名（例: 東京1R 2歳未勝利）",
       "predictions": [
         {
           "mark": "◎",
-          "horse_number": 3,
-          "horse_name": "馬名",
-          "predicted_win_rate": 0.28,
-          "current_odds": 3.2,
-          "reason": "本命の根拠"
+          "horse_number": 1,
+          "horse_name": "実際の馬名",
+          "predicted_win_rate": 0.25,
+          "current_odds": 3.5,
+          "reason": "本命の評価理由"
         },
         {
           "mark": "◯",
-          "horse_number": 7,
-          "horse_name": "馬名",
+          "horse_number": 2,
+          "horse_name": "実際の馬名",
           "predicted_win_rate": 0.18,
-          "current_odds": 5.4,
-          "reason": "対抗の根拠"
+          "current_odds": 4.8,
+          "reason": "対抗の評価理由"
         },
         {
           "mark": "▲",
-          "horse_number": 12,
-          "horse_name": "馬名",
-          "predicted_win_rate": 0.10,
-          "current_odds": 18.5,
-          "reason": "穴馬の根拠"
+          "horse_number": 5,
+          "horse_name": "実際の馬名",
+          "predicted_win_rate": 0.12,
+          "current_odds": 12.0,
+          "reason": "穴馬の評価理由"
         },
         {
           "mark": "△",
-          "horse_number": 5,
-          "horse_name": "馬名",
-          "predicted_win_rate": 0.06,
-          "current_odds": 12.0,
-          "reason": "ひもの根拠"
+          "horse_number": 8,
+          "horse_name": "実際の馬名",
+          "predicted_win_rate": 0.08,
+          "current_odds": 15.0,
+          "reason": "ひもの評価理由"
         }
       ],
       "recommended_umaren": [
         {
-          "combination": "3 - 7",
-          "predicted_rate": 0.14,
-          "current_odds": 12.5,
-          "reason": "本命◎と対抗◯の組み合わせ"
+          "combination": "1 - 2",
+          "predicted_rate": 0.12,
+          "current_odds": 10.5,
+          "reason": "◎と◯の堅実な組み合わせ"
         },
         {
-          "combination": "3 - 12",
-          "predicted_rate": 0.08,
-          "current_odds": 35.0,
-          "reason": "本命◎と穴▲の高期待値組み合わせ"
+          "combination": "1 - 5",
+          "predicted_rate": 0.07,
+          "current_odds": 25.0,
+          "reason": "◎と▲の高期待値組み合わせ"
         }
       ]
     }
@@ -91,7 +95,7 @@ def get_gemini_prediction(race_data_text):
         )
         generation_config = genai.GenerationConfig(
             response_mime_type="application/json",
-            temperature=0.2,
+            temperature=0.1,
         )
         response = model.generate_content(
             race_data_text,
@@ -136,7 +140,7 @@ kelly_fraction = st.sidebar.slider("ケリー係数 (安全率)", min_value=0.1,
 
 if page == "🛠️ レース分析＆AI予測":
     st.title("🎯 AI印別評価・勝率分析＆馬連期待値")
-    st.write("netkeibaなどの出馬表URLを入力すると、AIが「◎・◯・▲・△」の勝率と期待値を自動算出します。")
+    st.write("netkeibaの出馬表URLを入力すると、出走馬を正確に読み込んで分析します。")
     
     target_url = st.text_input("出馬表URLを入力", value="https://race.netkeiba.com/race/shutuba.html?race_id=202605040301&rf=race_list")
     
@@ -146,18 +150,27 @@ if page == "🛠️ レース分析＆AI予測":
         elif not GOOGLE_API_KEY:
             st.error("APIキーが設定されていません。Streamlit CloudのSecretsを確認してください。")
         else:
-            with st.spinner('1/2 レース出馬表を取得中...'):
+            with st.spinner('1/2 出馬表テーブルのみをピンポイント取得中...'):
                 try:
                     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
                     response = requests.get(target_url, headers=headers, timeout=10)
                     response.encoding = 'euc-jp'
                     soup = BeautifulSoup(response.text, 'html.parser')
                     
-                    for script in soup(["script", "style"]):
-                        script.extract()
-                    race_text = soup.get_text(separator=' ', strip=True)
+                    # 出馬表テーブルだけをピンポイント抽出
+                    shutuba_table = soup.find('table', class_='Shutuba_Table')
+                    race_title = soup.find('div', class_='RaceName')
+                    race_name = race_title.get_text(strip=True) if race_title else "対象レース"
                     
-                    st.success("データ取得完了！Geminiで印・勝率・馬連を分析中...")
+                    if shutuba_table:
+                        race_text = f"レース名: {race_name}\n" + shutuba_table.get_text(separator=' ', strip=True)
+                    else:
+                        # テーブルが特定できない場合はテキスト全体から不要部分を削除して代用
+                        for script in soup(["script", "style", "header", "footer"]):
+                            script.extract()
+                        race_text = soup.get_text(separator=' ', strip=True)
+                    
+                    st.success("正確な出馬表データを取得！Geminiで分析中...")
                     
                     with st.spinner('2/2 勝率＆推奨購入額を算出中...'):
                         res = get_gemini_prediction(race_text)
@@ -165,10 +178,10 @@ if page == "🛠️ レース分析＆AI予測":
                         if "error" in res:
                             st.error(f"分析エラー: {res['error']}")
                         else:
-                            st.subheader(f"📊 【{res.get('race_name', '対象レース')}】 分析結果")
+                            st.subheader(f"📊 【{res.get('race_name', race_name)}】 分析結果")
                             
                             # 1. 各馬の印と勝率テーブル
-                            st.markdown("### 🏇 単勝評価・印別予測勝率")
+                            st.markdown("### 🏇 出走馬・印別予測勝率 (◎・◯・▲・△)")
                             preds = res.get("predictions", [])
                             if preds:
                                 table_preds = []
