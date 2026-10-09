@@ -20,19 +20,19 @@ if GOOGLE_API_KEY:
 # 1. AI予測 & 資金管理ロジック
 # ==========================================
 def get_gemini_prediction(combined_race_text):
-    """Gemini 3.5 Flash による上がり3F・調教・過去走の超高精度統合解析"""
+    """Gemini 3.5 Flash によるレース荒れ度・上がり3F・調教・過去走の超高精度統合解析"""
     system_prompt = """
-    あなたは競馬の確率論・末脚（上がり3F）データ分析・調教分析に精通したプロのデータサイエンティスト・トラックマンです。
-    提供された【競馬新聞・出馬表データ（過去3走成績・上がり3F・通過順含む）】および【調教データ】を精査し、各馬の実質勝率（1着確率）と印、馬連推奨を分析してください。
+    あなたは競馬の確率論・末脚（上がり3F）データ分析・波乱度予測に精通したプロのデータサイエンティスト・トラックマンです。
+    提供された【競馬新聞・出馬表データ（過去3走成績・上がり3F・通過順含む）】および【調教データ】を精査し、各馬の実質勝率（1着確率）、レースの荒れ度、印、馬連推奨を分析してください。
 
-    【最重要加点ポイント（上がり3F＆競馬新聞データ重視）】
-    1. 上がり3F（スパート力）評価（最優先）:
-       - 新聞データに含まれる「前走上がり3Fタイム」「過去3走の上がり3F平均」「上がり順位（1位・2位等）」を緻密に算出し、メンバー内で上位（速い）馬に**非常に高い勝率評価・ポイント**を与えてください。
-       - 前走・過去走で「上がり最速」を記録している馬は、展開不向きによる敗戦（展開不利）でも高く評価してください。
-    2. 展開・脚質と調教の掛け合わせ:
-       - 過去走の通過順から展開を予測し、調教の最終追い切り（坂路・CWの終い伸び）と合体させて状態面を判断してください。
-    3. 馬名・馬番の正確性:
-       - 必ずテキスト内に存在する「実際の馬番」と「実際の馬名」のみを使用してください。
+    【最重要解析ポイント】
+    1. レース荒れ度（波乱度）の判定:
+       - 上位人気の信頼性、メンバー全体の能力差、過去3走の上がり3Fタイムの接戦度を評価し、レースの荒れやすさを判定してください。
+       - 「超高波乱（大荒れ）」「高波乱」「中波乱」「堅調（本命堅い）」のいずれかで判定し、その理由（「オッズは割れているが決定打に欠ける」「本命馬の上がり3Fが圧倒的で堅い」など）を出力してください。
+    2. 上がり3F（スパート力）評価（最優先加点）:
+       - 新聞データに含まれる「前走上がり3Fタイム」「過去3走の上がり3F平均」「上がり順位（1位・2位等）」を算出し、メンバー内で上位（速い）馬に高い勝率評価・ポイントを与えてください。
+    3. 調教データとの掛け合わせ & 馬名・馬番の正確性:
+       - 最終追い切りの伸び脚と合体させ、テキスト内に存在する「実際の馬番」「実際の馬名」のみを使用してください。
 
     印の定義:
     ◎: 本命（メンバー最速クラスの上がり3F性能＋調教良好で最も勝ち切る確率が高い馬）
@@ -43,14 +43,16 @@ def get_gemini_prediction(combined_race_text):
     以下のJSONフォーマットのみを出力してください。
     {
       "race_name": "レース名（例: 東京1R 2歳未勝利）",
+      "volatility_level": "🔥🔥🔥 超高波乱",
+      "volatility_reason": "上位人気のオッズは割れているが軸馬に決定打がなく、上がり3F差もわずか。混戦で大穴激走の可能性が高い難解なレース。",
       "predictions": [
         {
           "mark": "◎",
           "horse_number": 1,
           "horse_name": "実際の馬名",
-          "predicted_win_rate": 0.30,
+          "predicted_win_rate": 0.28,
           "current_odds": 3.2,
-          "reason": "【新聞データ解析: 前走上がり最速33.8秒 / 過去3走上がり平均1位】 圧倒的な末脚性能。東京の長い直線で差し切り濃厚"
+          "reason": "【新聞データ解析: 前走上がり最速33.8秒 / 過去3走上がり平均1位】 圧倒的な末脚性能。"
         },
         {
           "mark": "◯",
@@ -58,7 +60,7 @@ def get_gemini_prediction(combined_race_text):
           "horse_name": "実際の馬名",
           "predicted_win_rate": 0.18,
           "current_odds": 4.8,
-          "reason": "【新聞データ解析: 過去3走上がり平均2位】 安定して上がり上位をマーク。今回も好勝負"
+          "reason": "【新聞データ解析: 過去3走上がり平均2位】 安定して上がり上位をマーク。"
         },
         {
           "mark": "▲",
@@ -66,7 +68,7 @@ def get_gemini_prediction(combined_race_text):
           "horse_name": "実際の馬名",
           "predicted_win_rate": 0.14,
           "current_odds": 15.0,
-          "reason": "【新聞データ解析: 前走上がり2位で展開不向き】 人気はないが新聞の過去走データから末脚性能が高く、大穴妙味あり"
+          "reason": "【新聞データ解析: 前走上がり2位で展開不向き】 新聞データから末脚性能が高く、大穴妙味あり。"
         },
         {
           "mark": "△",
@@ -74,7 +76,7 @@ def get_gemini_prediction(combined_race_text):
           "horse_name": "実際の馬名",
           "predicted_win_rate": 0.06,
           "current_odds": 18.0,
-          "reason": "【新聞データ解析: 過去3走安定】 連下・3着候補"
+          "reason": "【新聞データ解析: 過去3走安定】 連下・3着候補。"
         }
       ],
       "recommended_umaren": [
@@ -94,7 +96,6 @@ def get_gemini_prediction(combined_race_text):
     }
     """
     try:
-        # モデル名を gemini-3.5-flash に更新
         model = genai.GenerativeModel(
             'gemini-3.5-flash',
             system_instruction=system_prompt
@@ -149,13 +150,13 @@ initial_bankroll = st.sidebar.number_input("現在資金 (円)", min_value=10000
 kelly_fraction = st.sidebar.slider("ケリー係数 (安全率)", min_value=0.1, max_value=1.0, value=0.25, step=0.05)
 
 if page == "🛠️ レース分析＆AI予測":
-    st.title("🎯 AI全自動分析（Gemini 3.5 Flash 搭載）")
-    st.write("競馬新聞URL（newspaper.html）または通常の出馬表URLを入力すると、高密度データを解析します。")
+    st.title("🎯 AI全自動分析（荒れ度判定 ＆ Gemini 3.5 Flash）")
+    st.write("出馬表・競馬新聞URLを入力すると、レースの荒れ度（波乱度）とおすすめ買い目を同時に自動判定します。")
     
     default_url = "https://race.netkeiba.com/race/newspaper.html?m=riot-shutuba-past&race_id=202605040401"
     target_url = st.text_input("出馬表 / 競馬新聞URLを入力", value=default_url)
     
-    if st.button("競馬新聞データ＋上がり3F＋調教をAI分析"):
+    if st.button("レース荒れ度＋上がり3F＋調教をAI分析"):
         if not target_url:
             st.warning("URLを入力してください。")
         elif not GOOGLE_API_KEY:
@@ -198,13 +199,19 @@ if page == "🛠️ レース分析＆AI予測":
 
             combined_race_text = f"【レース名】: {race_name}\n\n【競馬新聞・過去走・上がり3Fデータ】:\n{shutuba_text}\n\n【調教・追い切りデータ】:\n{oikiri_text}"
 
-            with st.spinner('3/3 Gemini 3.5 Flash で新聞データ＆上がり3F分析を実行中...'):
+            with st.spinner('3/3 Gemini 3.5 Flash で荒れ度判定＆上がり3F分析を実行中...'):
                 res = get_gemini_prediction(combined_race_text)
                 
                 if "error" in res:
                     st.error(f"分析エラー: {res['error']}")
                 else:
                     st.subheader(f"📊 【{res.get('race_name', race_name)}】 分析結果")
+                    
+                    # 💥 レース荒れ度（波乱度）表示ブロック
+                    vol_level = res.get("volatility_level", "判定不能")
+                    vol_reason = res.get("volatility_reason", "")
+                    
+                    st.info(f"⚡ **レース波乱度:** {vol_level}\n\n**【混戦・波乱理由】:** {vol_reason}")
                     
                     st.markdown("### 🏇 出走馬・印別予測勝率 (新聞上がり3F＆調教反映)")
                     preds = res.get("predictions", [])
