@@ -26,7 +26,7 @@ def get_gemini_prediction(race_data_text):
     以下に提供された【実際の出馬表テキストデータ】のみを解析し、出走馬の勝率と印、馬連推奨を分析してください。
 
     【重要制約事項】
-    - 必ずテキスト内に存在する「実際の馬番」と「実際の馬名」のみを使用してください。架空の馬名やデータを創作することは厳禁です。
+    - 必ずテキスト内に存在する「実際の馬番」と「実際の馬名」のみを使用してください。
     - 単勝オッズが取得できている場合はその数字を使用し、不明な場合は実力に応じた想定オッズで計算してください。
 
     印の定義:
@@ -90,7 +90,7 @@ def get_gemini_prediction(race_data_text):
     """
     try:
         model = genai.GenerativeModel(
-            'gemini-3.5-flash',
+            'gemini-1.5-flash',
             system_instruction=system_prompt
         )
         generation_config = genai.GenerationConfig(
@@ -106,7 +106,7 @@ def get_gemini_prediction(race_data_text):
         return {"error": str(e)}
 
 def calculate_kelly_bet(predicted_win_rate, odds, bankroll, kelly_fraction=0.25):
-    """ケリー基準による最適ベット額計算"""
+    """ケリー基準による最適ベット額計算（100円単位切り捨て・最小100円保証）"""
     expected_value = predicted_win_rate * odds
     
     if expected_value <= 1.0 or odds <= 1.0:
@@ -118,7 +118,12 @@ def calculate_kelly_bet(predicted_win_rate, odds, bankroll, kelly_fraction=0.25)
     
     f = (b * p - q) / b
     adjusted_fraction = f * kelly_fraction
-    bet_amount = int((bankroll * adjusted_fraction) // 100 * 100)
+    raw_bet = bankroll * adjusted_fraction
+    
+    # 最低100円以上の買い目額を設定
+    bet_amount = int(raw_bet // 100 * 100)
+    if bet_amount == 0 and raw_bet > 0:
+        bet_amount = 100
     
     return {
         "action": "買い" if bet_amount > 0 else "見送り",
@@ -140,7 +145,7 @@ kelly_fraction = st.sidebar.slider("ケリー係数 (安全率)", min_value=0.1,
 
 if page == "🛠️ レース分析＆AI予測":
     st.title("🎯 AI印別評価・勝率分析＆馬連期待値")
-    st.write("netkeibaの出馬表URLを入力すると、出走馬を正確に読み込んで分析します。")
+    st.write("netkeibaの出馬表URLを入力すると、日本語文字化けを防いで正確に分析します。")
     
     target_url = st.text_input("出馬表URLを入力", value="https://race.netkeiba.com/race/shutuba.html?race_id=202605040301&rf=race_list")
     
@@ -150,27 +155,29 @@ if page == "🛠️ レース分析＆AI予測":
         elif not GOOGLE_API_KEY:
             st.error("APIキーが設定されていません。Streamlit CloudのSecretsを確認してください。")
         else:
-            with st.spinner('1/2 出馬表テーブルのみをピンポイント取得中...'):
+            with st.spinner('1/2 文字化け対策を行いつつ出馬表を取得中...'):
                 try:
                     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
                     response = requests.get(target_url, headers=headers, timeout=10)
-                    response.encoding = 'euc-jp'
-                    soup = BeautifulSoup(response.text, 'html.parser')
                     
-                    # 出馬表テーブルだけをピンポイント抽出
+                    # 文字化け対策: BeautifulSoupにeuc-jpを明示指定してParse
+                    soup = BeautifulSoup(response.content, 'html.parser', from_encoding='euc-jp')
+                    
+                    # 不要な要素を削除
+                    for tag in soup(["script", "style", "noscript", "iframe"]):
+                        tag.extract()
+                    
+                    # 出馬表テーブルまたはメインコンテンツのテキストを取得
                     shutuba_table = soup.find('table', class_='Shutuba_Table')
-                    race_title = soup.find('div', class_='RaceName')
+                    race_title = soup.find('div', class_='RaceName') or soup.find('h1', class_='RaceName')
                     race_name = race_title.get_text(strip=True) if race_title else "対象レース"
                     
                     if shutuba_table:
                         race_text = f"レース名: {race_name}\n" + shutuba_table.get_text(separator=' ', strip=True)
                     else:
-                        # テーブルが特定できない場合はテキスト全体から不要部分を削除して代用
-                        for script in soup(["script", "style", "header", "footer"]):
-                            script.extract()
-                        race_text = soup.get_text(separator=' ', strip=True)
+                        race_text = f"レース名: {race_name}\n" + soup.get_text(separator=' ', strip=True)
                     
-                    st.success("正確な出馬表データを取得！Geminiで分析中...")
+                    st.success("日本語出馬表データを正常取得！Geminiで分析中...")
                     
                     with st.spinner('2/2 勝率＆推奨購入額を算出中...'):
                         res = get_gemini_prediction(race_text)
