@@ -44,7 +44,7 @@ def deduplicate_and_merge_rules(existing_rules, new_rule):
     {
       "status": "MERGED" (統合・更新した場合) または "ADDED" (新規追加した場合),
       "merged_rules": ["ルール1", "ルール2", ...],
-      "reason": "どのような処理を行ったかの説明（例: 第1条の展開ルールと同種だったため統合更新しました）"
+      "reason": "どのような処理を行ったかの説明"
     }
     """
     
@@ -57,13 +57,12 @@ def deduplicate_and_merge_rules(existing_rules, new_rule):
         res_json = json.loads(response.text)
         return res_json.get("merged_rules", existing_rules + [new_rule]), res_json.get("reason", "処理完了")
     except Exception as e:
-        # エラー時はシンプルに重複を完全一致だけで防ぐ安全処理
         if new_rule not in existing_rules:
             return existing_rules + [new_rule], "新規追加（フォールバック）"
         return existing_rules, "同種ルールが既に存在します"
 
 def get_gemini_prediction(combined_race_text, feedback_rules=None):
-    """Gemini 3.5 Flash による反省ルールフィードバック反映型の統合解析"""
+    """Gemini 3.5 Flash による馬連・三連複対応の統合解析"""
     
     rules_text = ""
     if feedback_rules:
@@ -73,10 +72,9 @@ def get_gemini_prediction(combined_race_text, feedback_rules=None):
 
     system_prompt = f"""
     あなたは競馬の確率論・展開読み・コース適性・調教時計解析に精通したプロのデータサイエンティストです。
-    提供された【競馬新聞・出馬表データ】および【調教データ】を精査し、各馬の実質勝率（1着確率）、レース展開、荒れ度、印、馬連推奨を分析してください。
+    提供された【競馬新聞・出馬表データ】および【調教データ】を精査し、各馬の実質勝率（1着確率）、レース展開、荒れ度、印、馬連推奨、三連複推奨を分析してください。
 
     【学習済みのフィードバック・反省ルール（最優先適用）】
-    以下のルールは過去のレース結果検証から得られた重要改善点です。勝率・印の評価に強く反映させてください：
     {rules_text}
 
     【最重要解析ポイント】
@@ -111,6 +109,20 @@ def get_gemini_prediction(combined_race_text, feedback_rules=None):
           "predicted_rate": 0.15,
           "current_odds": 10.5,
           "reason": "理由"
+        }}
+      ],
+      "recommended_sanrenpuku": [
+        {{
+          "combination": "1 - 2 - 5",
+          "predicted_rate": 0.08,
+          "current_odds": 28.5,
+          "reason": "◎軸から◯および仕上がり優秀な穴▲への好バランス三連複"
+        }},
+        {{
+          "combination": "1 - 2 - 8",
+          "predicted_rate": 0.05,
+          "current_odds": 42.0,
+          "reason": "軸固めから連下候補への流しペア"
         }}
       ]
     }}
@@ -193,14 +205,14 @@ if st.sidebar.button("全ルールを初期化"):
     st.rerun()
 
 if page == "🛠️ レース分析＆AI予測":
-    st.title("🎯 AI全自動分析（学習フィードバック適用中）")
+    st.title("🎯 AI全自動分析（馬連・三連複対応 ＆ 学習フィードバック適用）")
     default_url = "https://race.netkeiba.com/race/newspaper.html?m=riot-shutuba-past&race_id=202605040401"
     target_url = st.text_input("出馬表 / 競馬新聞URLを入力", value=default_url)
     
     if st.button("総合AI分析を実行"):
         if target_url and GOOGLE_API_KEY:
             headers = {'User-Agent': 'Mozilla/5.0'}
-            with st.spinner('学習済みルールを適用して分析中...'):
+            with st.spinner('馬連＆三連複の期待値を分析中...'):
                 try:
                     res_shutuba = requests.get(target_url, headers=headers, timeout=10)
                     soup_shutuba = BeautifulSoup(res_shutuba.content, 'html.parser', from_encoding='euc-jp')
@@ -231,6 +243,8 @@ if page == "🛠️ レース分析＆AI予測":
                         with col2:
                             st.success(f"🏁 **予想展開:** {res.get('pace_prediction', '')}\n\n{res.get('pace_reason', '')}")
                         
+                        # 1. 印・予測勝率テーブル
+                        st.markdown("### 🏇 出走馬・印別予測勝率 (◎・◯・▲・△)")
                         preds = res.get("predictions", [])
                         if preds:
                             table_preds = []
@@ -252,6 +266,49 @@ if page == "🛠️ レース分析＆AI予測":
                                     "理由": item.get("reason", "")
                                 })
                             st.dataframe(pd.DataFrame(table_preds), use_container_width=True)
+
+                        # 2. おすすめ馬連
+                        st.markdown("### 🎟️ おすすめ馬連ペア（期待値順）")
+                        umaren_list = res.get("recommended_umaren", [])
+                        if umaren_list:
+                            table_umaren = []
+                            for item in umaren_list:
+                                combo = item.get("combination")
+                                rate = item.get("predicted_rate", 0)
+                                odds = item.get("current_odds", 1.0)
+                                kelly = calculate_kelly_bet(rate, odds, initial_bankroll, kelly_fraction)
+                                table_umaren.append({
+                                    "馬連ペア": combo,
+                                    "的中確率": f"{rate*100:.1f}%",
+                                    "想定オッズ": f"{odds}倍",
+                                    "期待値(EV)": kelly["ev"],
+                                    "馬連判定": "🔥 買い" if kelly["ev"] > 1.0 else "⏸️ 見送り",
+                                    "推奨購入額": f"¥{kelly['bet_amount']:,}",
+                                    "理由": item.get("reason", "")
+                                })
+                            st.dataframe(pd.DataFrame(table_umaren), use_container_width=True)
+
+                        # 3. おすすめ三連複
+                        st.markdown("### 🥉 おすすめ三連複組み合わせ（期待値順）")
+                        sanrenpuku_list = res.get("recommended_sanrenpuku", [])
+                        if sanrenpuku_list:
+                            table_sanrenpuku = []
+                            for item in sanrenpuku_list:
+                                combo = item.get("combination")
+                                rate = item.get("predicted_rate", 0)
+                                odds = item.get("current_odds", 1.0)
+                                kelly = calculate_kelly_bet(rate, odds, initial_bankroll, kelly_fraction)
+                                table_sanrenpuku.append({
+                                    "三連複組合せ": combo,
+                                    "的中確率": f"{rate*100:.1f}%",
+                                    "想定オッズ": f"{odds}倍",
+                                    "期待値(EV)": kelly["ev"],
+                                    "三連複判定": "🔥 買い" if kelly["ev"] > 1.0 else "⏸️ 見送り",
+                                    "推奨購入額": f"¥{kelly['bet_amount']:,}",
+                                    "理由": item.get("reason", "")
+                                })
+                            st.dataframe(pd.DataFrame(table_sanrenpuku), use_container_width=True)
+
                 except Exception as e:
                     st.error(f"エラー: {e}")
 
@@ -290,7 +347,6 @@ elif page == "🏁 結果検証＆プロンプト学習":
                 except Exception as e:
                     st.error(f"取得エラー: {e}")
 
-    # ボタン押下エリア（セッションをまたいで追加できるように独立）
     if "current_sug_rule" in st.session_state and st.session_state["current_sug_rule"]:
         if st.button("➕ 重複チェックを行ってルールを保存・統合する"):
             with st.spinner('既存ルールとの重複チェック＆統合判定中...'):
