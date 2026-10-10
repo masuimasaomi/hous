@@ -171,3 +171,97 @@ if page == "🛠️ レース分析＆AI予測":
                     res_shutuba = requests.get(target_url, headers=headers, timeout=10)
                     soup_shutuba = BeautifulSoup(res_shutuba.content, 'html.parser', from_encoding='euc-jp')
                     for tag in soup_shutuba(["script", "style", "noscript", "iframe"]):
+                        tag.extract()
+                    race_title = soup_shutuba.find('div', class_='RaceName') or soup_shutuba.find('h1', class_='RaceName')
+                    race_name = race_title.get_text(strip=True) if race_title else "対象レース"
+                    newspaper_table = soup_shutuba.find('div', id='RaceNewspaper') or soup_shutuba.find('table', class_='Shutuba_Table') or soup_shutuba.find('table')
+                    shutuba_text = newspaper_table.get_text(separator=' ', strip=True) if newspaper_table else soup_shutuba.get_text(separator=' ', strip=True)
+
+                    oikiri_url = target_url.replace("newspaper.html", "oikiri.html").replace("shutuba.html", "oikiri.html")
+                    res_oikiri = requests.get(oikiri_url, headers=headers, timeout=10)
+                    soup_oikiri = BeautifulSoup(res_oikiri.content, 'html.parser', from_encoding='euc-jp')
+                    for tag in soup_oikiri(["script", "style", "noscript", "iframe"]):
+                        tag.extract()
+                    oikiri_table = soup_oikiri.find('table', class_='Oikiri_Table') or soup_oikiri.find('div', class_='OikiriData')
+                    oikiri_text = oikiri_table.get_text(separator=' ', strip=True) if oikiri_table else soup_oikiri.get_text(separator=' ', strip=True)
+
+                    combined_race_text = f"【レース名】: {race_name}\n\n【出馬表】:\n{shutuba_text}\n\n【調教】:\n{oikiri_text}"
+                    
+                    # 学習済みルールを渡してGemini呼び出し
+                    res = get_gemini_prediction(combined_race_text, feedback_rules=st.session_state["feedback_rules"])
+                    
+                    if "error" not in res:
+                        st.subheader(f"📊 【{res.get('race_name', race_name)}】 分析結果")
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.info(f"⚡ **レース波乱度:** {res.get('volatility_level', '')}\n\n{res.get('volatility_reason', '')}")
+                        with col2:
+                            st.success(f"🏁 **予想展開:** {res.get('pace_prediction', '')}\n\n{res.get('pace_reason', '')}")
+                        
+                        preds = res.get("predictions", [])
+                        if preds:
+                            table_preds = []
+                            for item in preds:
+                                rate = item.get("predicted_win_rate", 0)
+                                odds = item.get("current_odds", 1.0)
+                                kelly = calculate_kelly_bet(rate, odds, initial_bankroll, kelly_fraction)
+                                table_preds.append({
+                                    "印": item.get("mark", "-"),
+                                    "馬番": item.get("horse_number", "-"),
+                                    "馬名": item.get("horse_name", "-"),
+                                    "AI予測勝率": f"{rate*100:.1f}%",
+                                    "単勝オッズ": f"{odds}倍",
+                                    "同距離適性": item.get("same_distance_eval", "-"),
+                                    "調子トレンド": item.get("condition_trend", "-"),
+                                    "期待値(EV)": kelly["ev"],
+                                    "単勝判定": "🔥 買い" if kelly["ev"] > 1.0 else "⏸️ 見送り",
+                                    "推奨購入額": f"¥{kelly['bet_amount']:,}",
+                                    "理由": item.get("reason", "")
+                                })
+                            st.dataframe(pd.DataFrame(table_preds), use_container_width=True)
+                except Exception as e:
+                    st.error(f"エラー: {e}")
+
+elif page == "🏁 結果検証＆プロンプト学習":
+    st.title("🏁 レース結果検証 ＆ AIプロンプト自動学習")
+    st.write("過去のレース結果（`result.html`）を解析し、得られた反省ルールをボタン一つでAIの次回予想ロジックに保存・定着させます。")
+    
+    result_url = st.text_input("レース結果URLを入力", value="https://race.netkeiba.com/race/result.html?race_id=202605040311")
+    
+    if st.button("レース結果を検証・反省する"):
+        if result_url and GOOGLE_API_KEY:
+            headers = {'User-Agent': 'Mozilla/5.0'}
+            with st.spinner('レース結果を取得して分析中...'):
+                try:
+                    res_result = requests.get(result_url, headers=headers, timeout=10)
+                    soup_result = BeautifulSoup(res_result.content, 'html.parser', from_encoding='euc-jp')
+                    for tag in soup_result(["script", "style", "noscript", "iframe"]):
+                        tag.extract()
+                    
+                    result_table = soup_result.find('table', id='All_Result_Table') or soup_result.find('table')
+                    result_text = result_table.get_text(separator=' ', strip=True) if result_table else soup_result.get_text(separator=' ', strip=True)
+                    
+                    analysis = analyze_race_result(result_text)
+                    
+                    if "error" not in analysis:
+                        st.subheader("📝 AIのレース振り返り＆反省レポート")
+                        st.write(f"**【1〜3着結果】:** {analysis.get('race_summary', '')}")
+                        st.success(f"💡 **【実際の勝因・好走要因】:**\n{analysis.get('winning_factors', '')}")
+                        st.warning(f"🔧 **【AIの反省点】:**\n{analysis.get('ai_reflection', '')}")
+                        
+                        sug_rule = analysis.get('suggested_rule', '')
+                        st.markdown(f"### 🧠 AIが提案する新フィードバックルール:\n> **{sug_rule}**")
+                        
+                        if st.button("➕ このルールをAIの予想ロジックに保存・記憶させる"):
+                            if sug_rule and sug_rule not in st.session_state["feedback_rules"]:
+                                st.session_state["feedback_rules"].append(sug_rule)
+                                st.success("ルールを保存しました！左サイドバーの『適用中のフィードバックルール』に追加され、次回の予想に反映されます。")
+                                st.rerun()
+                    else:
+                        st.error(f"分析エラー: {analysis['error']}")
+                except Exception as e:
+                    st.error(f"取得エラー: {e}")
+
+elif page == "📈 バックテスト分析":
+    st.title("📈 バックテスト結果")
+    st.write("過去データのシミュレーション表示エリアです。")
