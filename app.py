@@ -19,17 +19,52 @@ if GOOGLE_API_KEY:
 # 反省ルール（フィードバック）のセッション状態の初期化
 if "feedback_rules" not in st.session_state:
     st.session_state["feedback_rules"] = [
-        "東京ダート・芝の長直線コースでは、上がり3F性能だけでなく、4角で後ろすぎない(4角7番手以内)展開・位置取りも加点すること。",
-        "同型（逃げ馬）が3頭以上競合する場合は、差し・追込馬の期待値を引き上げ、逃げ馬の勝率を割り引くこと。"
+        "【展開・位置取り】東京など直線が長いコースでは、上がり3F性能だけでなく、4角7番手以内の好位・中団に付けられる位置取りの馬を評価すること。",
+        "【展開・ペース】逃げ馬（通過順1番手経験馬）が3頭以上競合する場合はハイペース必至と判断し、上がり3F最速級の差し・追込馬の勝率を引き上げ、逃げ馬は割り引くこと。"
     ]
 
 # ==========================================
-# 1. AI予測 & 資金管理ロジック
+# 1. AI予測 & ルール統合ロジック
 # ==========================================
+def deduplicate_and_merge_rules(existing_rules, new_rule):
+    """既存のルール一覧と新規ルールを比較し、同種のものがあれば統合、なければ新規追加する"""
+    if not existing_rules:
+        return [new_rule], "新規追加"
+
+    system_prompt = """
+    あなたは競馬AIのナレッジベース管理モジュールです。
+    【既存のルール一覧】と【追加したい新しいルール】を分析し、以下を行ってください。
+
+    1. もし【追加したい新しいルール】が【既存のルール一覧】のいずれかと「内容が重複している」「同種の事象を扱っている」場合:
+       - 類似ルールをより精緻・包括的な1つのルール文に「統合（アップデート）」してください。
+    2. もし完全に「新しい観点のルール」である場合:
+       - 既存ルール群をそのまま維持し、末尾に【追加したい新しいルール】を追加してください。
+
+    以下のJSONフォーマットのみを出力してください。
+    {
+      "status": "MERGED" (統合・更新した場合) または "ADDED" (新規追加した場合),
+      "merged_rules": ["ルール1", "ルール2", ...],
+      "reason": "どのような処理を行ったかの説明（例: 第1条の展開ルールと同種だったため統合更新しました）"
+    }
+    """
+    
+    prompt_input = f"【既存のルール一覧】:\n" + "\n".join([f"{i+1}. {r}" for i, r in enumerate(existing_rules)]) + f"\n\n【追加したい新しいルール】:\n{new_rule}"
+    
+    try:
+        model = genai.GenerativeModel('gemini-3.5-flash', system_instruction=system_prompt)
+        generation_config = genai.GenerationConfig(response_mime_type="application/json", temperature=0.1)
+        response = model.generate_content(prompt_input, generation_config=generation_config)
+        res_json = json.loads(response.text)
+        return res_json.get("merged_rules", existing_rules + [new_rule]), res_json.get("reason", "処理完了")
+    except Exception as e:
+        # エラー時はシンプルに重複を完全一致だけで防ぐ安全処理
+        if new_rule not in existing_rules:
+            return existing_rules + [new_rule], "新規追加（フォールバック）"
+        return existing_rules, "同種ルールが既に存在します"
+
 def get_gemini_prediction(combined_race_text, feedback_rules=None):
     """Gemini 3.5 Flash による反省ルールフィードバック反映型の統合解析"""
     
-    # 蓄積された学習ルールの整形
     rules_text = ""
     if feedback_rules:
         rules_text = "\n".join([f"- {rule}" for rule in feedback_rules])
@@ -67,7 +102,7 @@ def get_gemini_prediction(combined_race_text, feedback_rules=None):
           "same_distance_eval": "🏆 同距離最高実績",
           "condition_trend": "🔥 急上昇（絶好調）",
           "recent_3f_history": [35.1, 34.5, 34.0, 33.6],
-          "reason": "詳細理由（学習ルールの適用有無も触れる）"
+          "reason": "詳細理由"
         }}
       ],
       "recommended_umaren": [
@@ -103,7 +138,7 @@ def analyze_race_result(result_text):
       "race_summary": "1〜3着の実際の着順とタイムまとめ",
       "winning_factors": "勝因・好走要因（上がり3F、展開など）",
       "ai_reflection": "AI予想ロジックの反省点と今後の改善・修正ポイント",
-      "suggested_rule": "AIに学習させる具体的な追加ルール（例: 東京芝1600mでは上がり3F上位かつ4角5番手以内の先行馬の評価を1.2倍にすること）"
+      "suggested_rule": "AIに学習させる具体的な追加ルール"
     }
     """
     try:
@@ -145,7 +180,6 @@ st.sidebar.header("⚙️ 資金管理設定")
 initial_bankroll = st.sidebar.number_input("現在資金 (円)", min_value=10000, value=100000, step=10000)
 kelly_fraction = st.sidebar.slider("ケリー係数 (安全率)", min_value=0.1, max_value=1.0, value=0.25, step=0.05)
 
-# サイドバーに学習済みルールの表示
 st.sidebar.markdown("---")
 st.sidebar.subheader("🧠 適用中のフィードバックルール")
 if st.session_state["feedback_rules"]:
@@ -154,7 +188,7 @@ if st.session_state["feedback_rules"]:
 else:
     st.sidebar.caption("適用中のカスタムルールはありません")
 
-if st.sidebar.button("ルールを初期化"):
+if st.sidebar.button("全ルールを初期化"):
     st.session_state["feedback_rules"] = []
     st.rerun()
 
@@ -187,7 +221,6 @@ if page == "🛠️ レース分析＆AI予測":
 
                     combined_race_text = f"【レース名】: {race_name}\n\n【出馬表】:\n{shutuba_text}\n\n【調教】:\n{oikiri_text}"
                     
-                    # 学習済みルールを渡してGemini呼び出し
                     res = get_gemini_prediction(combined_race_text, feedback_rules=st.session_state["feedback_rules"])
                     
                     if "error" not in res:
@@ -223,8 +256,8 @@ if page == "🛠️ レース分析＆AI予測":
                     st.error(f"エラー: {e}")
 
 elif page == "🏁 結果検証＆プロンプト学習":
-    st.title("🏁 レース結果検証 ＆ AIプロンプト自動学習")
-    st.write("過去のレース結果（`result.html`）を解析し、得られた反省ルールをボタン一つでAIの次回予想ロジックに保存・定着させます。")
+    st.title("🏁 レース結果検証 ＆ AIプロンプト自動重複排除学習")
+    st.write("過去のレース結果（`result.html`）を解析し、得られた反省ルールを既存のルールと重複比較しながら自動統合・追加します。")
     
     result_url = st.text_input("レース結果URLを入力", value="https://race.netkeiba.com/race/result.html?race_id=202605040311")
     
@@ -250,17 +283,25 @@ elif page == "🏁 結果検証＆プロンプト学習":
                         st.warning(f"🔧 **【AIの反省点】:**\n{analysis.get('ai_reflection', '')}")
                         
                         sug_rule = analysis.get('suggested_rule', '')
+                        st.session_state["current_sug_rule"] = sug_rule
                         st.markdown(f"### 🧠 AIが提案する新フィードバックルール:\n> **{sug_rule}**")
-                        
-                        if st.button("➕ このルールをAIの予想ロジックに保存・記憶させる"):
-                            if sug_rule and sug_rule not in st.session_state["feedback_rules"]:
-                                st.session_state["feedback_rules"].append(sug_rule)
-                                st.success("ルールを保存しました！左サイドバーの『適用中のフィードバックルール』に追加され、次回の予想に反映されます。")
-                                st.rerun()
                     else:
                         st.error(f"分析エラー: {analysis['error']}")
                 except Exception as e:
                     st.error(f"取得エラー: {e}")
+
+    # ボタン押下エリア（セッションをまたいで追加できるように独立）
+    if "current_sug_rule" in st.session_state and st.session_state["current_sug_rule"]:
+        if st.button("➕ 重複チェックを行ってルールを保存・統合する"):
+            with st.spinner('既存ルールとの重複チェック＆統合判定中...'):
+                new_rules, reason = deduplicate_and_merge_rules(
+                    st.session_state["feedback_rules"], 
+                    st.session_state["current_sug_rule"]
+                )
+                st.session_state["feedback_rules"] = new_rules
+                st.success(f"処理完了: {reason}")
+                st.session_state["current_sug_rule"] = None
+                st.rerun()
 
 elif page == "📈 バックテスト分析":
     st.title("📈 バックテスト結果")
