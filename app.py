@@ -16,13 +16,12 @@ GOOGLE_API_KEY = st.secrets.get("GOOGLE_API_KEY", os.environ.get("GOOGLE_API_KEY
 if GOOGLE_API_KEY:
     genai.configure(api_key=GOOGLE_API_KEY)
 
-# 名古屋競馬場特化のフィードバックルールの初期化
 if "feedback_rules" not in st.session_state:
     st.session_state["feedback_rules"] = [
         "【名古屋・新コース形態】2022年移転後の新コースは直線が300mと西日本最長クラスのため、旧コースのような前残り一辺倒ではなく、過去3走平均の上がり3F上位の差し・追込馬の勝率・期待値を高く評価すること。",
         "【名古屋・1500m戦の展開】主力距離である1500m戦は最初のコーナーまで距離がありペースが速くなりやすいため、逃げ・先行馬が競り合う場合は中団待機の馬を大幅に加点すること。",
         "【名古屋・920m短距離】920mの超短距離戦では圧倒的にテンのスピード（スタートからのダッシュ力・前走の通過順1〜2番手）を最優先で評価すること。",
-        "【馬場状態・時計勝負】重・不良馬場では極端に時計が速くなる傾向があるため、良馬場の上がり性能よりも「持ち時計（走破タイム実績）」の優秀な馬を強力に加点すること。"
+        "【馬場状態・時計勝負】重・不良馬場では極端に時計が速くなる傾向があるため、良馬場の上がり性能よりも「持ち時計（走破タイム実績）」の優秀な馬を強力加点すること。"
     ]
 
 # ==========================================
@@ -66,6 +65,10 @@ def get_gemini_prediction(combined_race_text, feedback_rules=None):
     あなたは地方競馬・名古屋競馬場の確率論・波乱度解析・展開読み・調教時計解析に精通したプロのデータサイエンティストです。
     提供された【名古屋競馬の出馬表・新聞データ】および【調教データ】を精査し、各馬の実質勝率（1着確率）、レース展開、荒れ度、印、馬連推奨、三連複推奨を分析してください。
 
+    【重要指示】
+    出走馬の中から、必ず「◎(本命)」「◯(対抗)」「▲(穴馬)」「△(連下)」を含む、上位評価の馬を最低でも4頭〜6頭以上リストアップしてください。1頭のみの出力は禁止です。
+    また、馬連と三連複の推奨買い目もそれぞれ複数件提案してください。
+
     【名古屋競馬特化の最重要解析ポイント】
     1. 新コース形態（直線300m）に応じた末脚（差し・追込）の再評価
     2. 距離別の展開有利不利（920mの先行力 vs 1500m/1700mの差し有利など）
@@ -92,7 +95,40 @@ def get_gemini_prediction(combined_race_text, feedback_rules=None):
           "same_distance_eval": "🏆 名古屋同距離最高実績",
           "condition_trend": "🔥 急上昇（絶好調）",
           "recent_3f_history": [37.1, 36.8, 36.5],
-          "reason": "詳細理由"
+          "reason": "本命の理由詳細"
+        }},
+        {{
+          "mark": "◯",
+          "horse_number": 2,
+          "horse_name": "対抗馬名",
+          "predicted_win_rate": 0.18,
+          "current_odds": 4.5,
+          "same_distance_eval": "○ 同条件安定",
+          "condition_trend": "安定",
+          "recent_3f_history": [38.0, 37.5, 37.2],
+          "reason": "対抗の理由詳細"
+        }},
+        {{
+          "mark": "▲",
+          "horse_number": 5,
+          "horse_name": "穴馬名",
+          "predicted_win_rate": 0.12,
+          "current_odds": 12.0,
+          "same_distance_eval": "▲ 未知数",
+          "condition_trend": "一変注意",
+          "recent_3f_history": [39.1, 38.5, 37.0],
+          "reason": "穴馬の理由詳細"
+        }},
+        {{
+          "mark": "△",
+          "horse_number": 8,
+          "horse_name": "連下馬名",
+          "predicted_win_rate": 0.08,
+          "current_odds": 15.0,
+          "same_distance_eval": "△ 掲示板級",
+          "condition_trend": "平行線",
+          "recent_3f_history": [38.5, 38.2, 38.4],
+          "reason": "連下の理由詳細"
         }}
       ],
       "recommended_umaren": [
@@ -100,7 +136,13 @@ def get_gemini_prediction(combined_race_text, feedback_rules=None):
           "combination": "1 - 2",
           "predicted_rate": 0.15,
           "current_odds": 10.5,
-          "reason": "理由"
+          "reason": "堅実な組み合わせ"
+        }},
+        {{
+          "combination": "1 - 5",
+          "predicted_rate": 0.08,
+          "current_odds": 25.0,
+          "reason": "穴狙い"
         }}
       ],
       "recommended_sanrenpuku": [
@@ -109,6 +151,12 @@ def get_gemini_prediction(combined_race_text, feedback_rules=None):
           "predicted_rate": 0.08,
           "current_odds": 28.5,
           "reason": "名古屋の長い直線を活かす差し脚信頼の三連複ペア"
+        }},
+        {{
+          "combination": "1 - 2 - 8",
+          "predicted_rate": 0.05,
+          "current_odds": 45.0,
+          "reason": "手堅い抑え"
         }}
       ]
     }}
@@ -189,7 +237,6 @@ if page == "🛠️ 名古屋レース分析＆AI予測":
     st.title("🎯 名古屋競馬 AI全自動分析（馬連・三連複対応）")
     st.write("netkeibaの地方競馬版（nar.netkeiba.com）の出馬表・新聞URLを入力してください。")
     
-    # 今日の名古屋競馬（例: 2026年10月14日）のデフォルトURLをセット
     default_url = "https://nar.netkeiba.com/race/newspaper.html?race_id=202642101411"
     target_url = st.text_input("名古屋競馬の出馬表 / 競馬新聞URLを入力", value=default_url)
     
