@@ -128,13 +128,20 @@ def fetch_text_from_url(url):
         return ""
 
 def is_target_race(score, target_setting):
-    """ユーザーの波乱度設定とAIのスコアを比較し、購入対象レースか判定する"""
     score = int(score) if str(score).isdigit() else 2
     if target_setting == "すべて対象": return True
     if target_setting == "中波乱以上(回収率重視)" and score >= 2: return True
     if target_setting == "大荒れのみ(穴党)" and score == 3: return True
     if target_setting == "堅実のみ(本命党)" and score == 1: return True
     return False
+
+def calculate_kelly_bet(predicted_win_rate, odds, bankroll, kelly_fraction=0.25):
+    if odds <= 1.0: return {"action": "オッズ確認要", "bet_amount": 0, "ev": 0.0}
+    ev = predicted_win_rate * odds
+    if ev <= 1.0: return {"action": "見送り", "bet_amount": 0, "ev": round(ev, 2)}
+    f = ((odds - 1.0) * predicted_win_rate - (1.0 - predicted_win_rate)) / (odds - 1.0)
+    bet = int((bankroll * (f * kelly_fraction)) // 100 * 100)
+    return {"action": "買い" if bet > 0 else "見送り", "bet_amount": max(bet, 100 if bet>0 else 0), "ev": round(ev, 2)}
 
 # ==========================================
 # 2. UI画面構成
@@ -149,7 +156,7 @@ target_volatility = st.sidebar.radio(
     ["すべて対象", "中波乱以上(回収率重視)", "大荒れのみ(穴党)", "堅実のみ(本命党)"],
     index=1
 )
-st.sidebar.caption("※設定した波乱度のレースだけが「買うべきレース」として抽出されます。")
+st.sidebar.caption("※設定した波乱度のレースだけが抽出されます。")
 
 st.sidebar.markdown("---")
 st.sidebar.header("⚙️ 資金管理設定")
@@ -157,7 +164,7 @@ initial_bankroll = st.sidebar.number_input("現在資金 (円)", min_value=10000
 kelly_fraction = st.sidebar.slider("ケリー係数 (安全率)", min_value=0.1, max_value=1.0, value=0.25, step=0.05)
 
 st.sidebar.markdown("---")
-st.sidebar.subheader("🧠 適用中ルール (自動保存済み)")
+st.sidebar.subheader("🧠 適用中ルール")
 if st.session_state["feedback_rules"]:
     for i, r in enumerate(st.session_state["feedback_rules"]): st.sidebar.caption(f"{i+1}. {r}")
 if st.sidebar.button("ルール初期化"):
@@ -183,13 +190,71 @@ if page == "🛠️ 1R単体 分析":
                 
                 st.write(f"**判定波乱度:** {res.get('volatility_level')}")
                 st.write(f"**理由:** {res.get('volatility_reason')}")
-                st.json(res)
+                
+                # 生のJSONではなく、見やすいテーブルで表示
+                st.markdown("### 🏇 出走馬・印別予測勝率")
+                preds = res.get("predictions", [])
+                if preds:
+                    table_preds = []
+                    for item in preds:
+                        rate = item.get("predicted_win_rate", 0)
+                        odds = item.get("current_odds", 0.0)
+                        kelly = calculate_kelly_bet(rate, odds, initial_bankroll, kelly_fraction)
+                        table_preds.append({
+                            "印": item.get("mark", "-"),
+                            "馬番": item.get("horse_number", "-"),
+                            "馬名": item.get("horse_name", "-"),
+                            "AI予測勝率": f"{rate*100:.1f}%",
+                            "単勝オッズ": f"{odds}倍" if odds > 0 else "取得不可",
+                            "期待値(EV)": kelly["ev"] if odds > 0 else "-",
+                            "単勝判定": kelly["action"],
+                            "推奨額": f"¥{kelly['bet_amount']:,}" if odds > 0 else "-",
+                            "評価理由": item.get("reason", "")
+                        })
+                    st.dataframe(pd.DataFrame(table_preds), use_container_width=True)
+
+                st.markdown("### 🎟️ おすすめ馬連ペア")
+                umaren_list = res.get("recommended_umaren", [])
+                if umaren_list:
+                    table_umaren = []
+                    for item in umaren_list:
+                        combo = item.get("combination")
+                        rate = item.get("predicted_rate", 0)
+                        odds = item.get("current_odds", 0.0)
+                        kelly = calculate_kelly_bet(rate, odds, initial_bankroll, kelly_fraction)
+                        table_umaren.append({
+                            "馬連ペア": combo,
+                            "的中確率": f"{rate*100:.1f}%",
+                            "想定オッズ": f"{odds}倍" if odds > 0 else "取得不可",
+                            "期待値(EV)": kelly["ev"] if odds > 0 else "-",
+                            "馬連判定": kelly["action"],
+                            "推奨額": f"¥{kelly['bet_amount']:,}" if odds > 0 else "-"
+                        })
+                    st.dataframe(pd.DataFrame(table_umaren), use_container_width=True)
+
+                st.markdown("### 🥉 おすすめ三連複組み合わせ")
+                sanrenpuku_list = res.get("recommended_sanrenpuku", [])
+                if sanrenpuku_list:
+                    table_sanrenpuku = []
+                    for item in sanrenpuku_list:
+                        combo = item.get("combination")
+                        rate = item.get("predicted_rate", 0)
+                        odds = item.get("current_odds", 0.0)
+                        kelly = calculate_kelly_bet(rate, odds, initial_bankroll, kelly_fraction)
+                        table_sanrenpuku.append({
+                            "三連複組合せ": combo,
+                            "的中確率": f"{rate*100:.1f}%",
+                            "想定オッズ": f"{odds}倍" if odds > 0 else "取得不可",
+                            "期待値(EV)": kelly["ev"] if odds > 0 else "-",
+                            "三連複判定": kelly["action"],
+                            "推奨額": f"¥{kelly['bet_amount']:,}" if odds > 0 else "-"
+                        })
+                    st.dataframe(pd.DataFrame(table_sanrenpuku), use_container_width=True)
+            else:
+                st.error("解析エラーが発生しました。")
 
 elif page == "🔄 指定日一括 AI予想＆抽出":
     st.title("🔄 1日全レース 一括AI予想 ＆ 買うべきレース抽出")
-    st.write("今日または明日の1RのURLを入力してください。AIが全レースを事前予想し、**買うべきレース（勝負レース）**を自動抽出します。")
-    st.caption("※前日の夜に明日のURLを入力すれば、翌日の『仕込み』が完了します！")
-    
     base_url = st.text_input("1Rの出馬表 または 結果URLを入力", value="https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/DebaTable?k_raceDate=2026%2F10%2F15&k_raceNo=1&k_babaCode=24")
     max_race = st.slider("処理する最終レース番号", min_value=1, max_value=12, value=12)
     
@@ -197,36 +262,29 @@ elif page == "🔄 指定日一括 AI予想＆抽出":
     if col1.button("🚀 一括AI予想 ＆ 勝負レース抽出"):
         progress_bar = st.progress(0)
         target_races = []
-        
         for race_no in range(1, max_race + 1):
             current_url = re.sub(r'k_raceNo=\d+', f'k_raceNo={race_no}', base_url)
             text = fetch_text_from_url(current_url)
             if text:
                 res = get_gemini_prediction(text, st.session_state["feedback_rules"])
                 st.session_state["last_prediction"][f"{race_no}R"] = res
-                
                 if "error" not in res:
                     score = res.get("volatility_score", 2)
                     if is_target_race(score, target_volatility):
                         target_races.append(f"{race_no}R ({res.get('volatility_level')})")
-            
             time.sleep(1.5)
             progress_bar.progress(race_no / max_race)
-            
         st.success("✅ 一括予想完了！")
         
-        # 勝負レースのピックアップ表示
         st.markdown("---")
         st.header(f"💰 指定日の「買うべき勝負レース」一覧 (設定: {target_volatility})")
         if target_races:
-            st.success("以下のレースがあなたの投資条件に合致しています！明日はこのレースに予算を集中させましょう。")
-            for tr in target_races:
-                st.markdown(f"- **{tr}**")
+            st.success("以下のレースがあなたの投資条件に合致しています！")
+            for tr in target_races: st.markdown(f"- **{tr}**")
         else:
-            st.warning("指定日には設定条件に合致するレースがありませんでした。資金温存（全見送り）を推奨します。")
+            st.warning("指定日には設定条件に合致するレースがありませんでした。資金温存を推奨します。")
 
     if col2.button("🏁 レース終了後：一括結果検証＆学習"):
-        st.info("※レースが終了してから実行してください。")
         progress_bar = st.progress(0)
         all_suggested_rules = []
         for race_no in range(1, max_race + 1):
@@ -240,7 +298,6 @@ elif page == "🔄 指定日一括 AI予想＆抽出":
                     all_suggested_rules.append(analysis['suggested_rule'])
             time.sleep(1.5)
             progress_bar.progress(race_no / max_race)
-        
         if all_suggested_rules:
             new_rules, _ = deduplicate_and_merge_rules(st.session_state["feedback_rules"], "\n".join(all_suggested_rules))
             st.session_state["feedback_rules"] = new_rules
@@ -250,8 +307,6 @@ elif page == "🔄 指定日一括 AI予想＆抽出":
 
 elif page == "📈 過去データ バックテスト自動学習":
     st.title("📈 過去レース バックテスト自動学習マシーン")
-    st.write("過去のレース日（1R）の出馬表URLを入力するだけで、AIが内部で「予想→結果照合→反省→ルール抽出→ファイル保存」までを全自動で行い、AI自身を鍛え上げます。")
-    
     past_base_url = st.text_input("過去レース 1Rの出馬表URLを入力", placeholder="例: .../DebaTable?k_raceDate=2026%2F09%2F01&k_raceNo=1&k_babaCode=24")
     past_max_race = st.slider("学習するレース数", min_value=1, max_value=12, value=12)
     
@@ -284,9 +339,9 @@ elif page == "📈 過去データ バックテスト自動学習":
             progress_text.text("✅ 全レースのバックテスト・トレーニングが完了しました！")
             
             if all_suggested_rules:
-                with st.spinner("抽出したすべての反省ルールを統合し、データベースに保存しています..."):
+                with st.spinner("ルールを統合し、データベースに保存しています..."):
                     new_rules, _ = deduplicate_and_merge_rules(st.session_state["feedback_rules"], "\n".join(all_suggested_rules))
                     st.session_state["feedback_rules"] = new_rules
                     save_rules(new_rules)
-                st.success("🎉 バックテストで得た教訓をすべて `rules.json` に統合・保存しました！AIがさらに賢くなりました。")
+                st.success("🎉 バックテストで得た教訓をすべて `rules.json` に統合・保存しました！")
                 st.rerun()
