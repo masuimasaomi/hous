@@ -4,217 +4,152 @@ import numpy as np
 import json
 import os
 import requests
+import time
+import re
 from bs4 import BeautifulSoup
 import google.generativeai as genai
 
 # ==========================================
 # 0. 初期設定とAPI設定
 # ==========================================
-st.set_page_config(page_title="名古屋競馬特化 AI ROIオプティマイザ", page_icon="🏇", layout="wide")
+st.set_page_config(page_title="地方競馬 AI ROIオプティマイザ", page_icon="🏇", layout="wide")
 
 GOOGLE_API_KEY = st.secrets.get("GOOGLE_API_KEY", os.environ.get("GOOGLE_API_KEY", ""))
 if GOOGLE_API_KEY:
     genai.configure(api_key=GOOGLE_API_KEY)
 
+# ==========================================
+# 永続化（JSONファイル保存）ロジック
+# ==========================================
+RULES_FILE = "rules.json"
+DEFAULT_RULES = [
+    "【展開・位置取り】地方の小回りコースではテンのスピード（前走通過順1〜2番手）を最優先で評価すること。",
+    "【馬場状態・時計勝負】重・不良馬場では極端に時計が速くなるため、良馬場の上がり性能よりも「持ち時計」を強力加点すること。"
+]
+
+def load_rules():
+    if os.path.exists(RULES_FILE):
+        try:
+            with open(RULES_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return DEFAULT_RULES
+    return DEFAULT_RULES
+
+def save_rules(rules):
+    try:
+        with open(RULES_FILE, "w", encoding="utf-8") as f:
+            json.dump(rules, f, ensure_ascii=False, indent=4)
+    except Exception as e:
+        st.error(f"ルールの保存に失敗しました: {e}")
+
 if "feedback_rules" not in st.session_state:
-    st.session_state["feedback_rules"] = [
-        "【名古屋・新コース形態】2022年移転後の新コースは直線が300mと西日本最長クラスのため、旧コースのような前残り一辺倒ではなく、過去3走平均の上がり3F上位の差し・追込馬の勝率・期待値を高く評価すること。",
-        "【名古屋・1500m戦の展開】主力距離である1500m戦は最初のコーナーまで距離がありペースが速くなりやすいため、逃げ・先行馬が競り合う場合は中団待機の馬を大幅に加点すること。",
-        "【名古屋・920m短距離】920mの超短距離戦では圧倒的にテンのスピード（スタートからのダッシュ力・前走の通過順1〜2番手）を最優先で評価すること。",
-        "【馬場状態・時計勝負】重・不良馬場では極端に時計が速くなる傾向があるため、良馬場の上がり性能よりも「持ち時計（走破タイム実績）」の優秀な馬を強力加点すること。"
-    ]
+    st.session_state["feedback_rules"] = load_rules()
+if "last_prediction" not in st.session_state:
+    st.session_state["last_prediction"] = {}
 
 # ==========================================
-# 1. AI予測 & 名古屋特化統合ロジック
+# 1. AI予測 & 統合ロジック
 # ==========================================
 def deduplicate_and_merge_rules(existing_rules, new_rule):
     if not existing_rules:
         return [new_rule], "新規追加"
-
     system_prompt = """
-    あなたは地方・名古屋競馬AIのナレッジベース管理モジュールです。
-    【既存の名古屋ルール一覧】と【追加したい新しいルール】を分析し、同種のものは統合し、新しいものは末尾に追加してください。
-
-    JSONフォーマットのみを出力してください:
-    {
-      "status": "MERGED" または "ADDED",
-      "merged_rules": ["ルール1", "ルール2", ...],
-      "reason": "説明"
-    }
+    あなたは地方競馬AIのナレッジベース管理モジュールです。
+    【既存のルール一覧】と【追加したい新しいルール】を分析し、同種のものは統合し、新しいものは末尾に追加してください。
+    JSONフォーマットのみを出力してください: {"status": "MERGED", "merged_rules": ["..."], "reason": "..."}
     """
-    prompt_input = f"【既存のルール一覧】:\n" + "\n".join([f"{i+1}. {r}" for i, r in enumerate(existing_rules)]) + f"\n\n【追加したい新しいルール】:\n{new_rule}"
+    prompt_input = f"【既存ルール】:\n" + "\n".join(existing_rules) + f"\n\n【新ルール】:\n{new_rule}"
     try:
         model = genai.GenerativeModel('gemini-3.5-flash', system_instruction=system_prompt)
-        generation_config = genai.GenerationConfig(response_mime_type="application/json", temperature=0.1)
-        response = model.generate_content(prompt_input, generation_config=generation_config)
-        res_json = json.loads(response.text)
+        res = model.generate_content(prompt_input, generation_config=genai.GenerationConfig(response_mime_type="application/json", temperature=0.1))
+        res_json = json.loads(res.text)
         return res_json.get("merged_rules", existing_rules + [new_rule]), res_json.get("reason", "処理完了")
-    except Exception as e:
-        if new_rule not in existing_rules:
-            return existing_rules + [new_rule], "新規追加（フォールバック）"
-        return existing_rules, "同種ルールが既に存在します"
+    except Exception:
+        if new_rule not in existing_rules: return existing_rules + [new_rule], "新規追加"
+        return existing_rules, "同種ルールあり"
 
 def get_gemini_prediction(combined_race_text, feedback_rules=None):
-    rules_text = ""
-    if feedback_rules:
-        rules_text = "\n".join([f"- {rule}" for rule in feedback_rules])
-    else:
-        rules_text = "- 特になし（デフォルト名古屋ロジック適用）"
-
+    rules_text = "\n".join([f"- {r}" for r in feedback_rules]) if feedback_rules else "- 特になし"
     system_prompt = f"""
-    あなたは地方競馬・名古屋競馬場の確率論・波乱度解析・展開読み・調教時計解析に精通したプロのデータサイエンティストです。
-    提供された【名古屋競馬の出馬表・新聞データ】および【調教データ】を精査し、各馬の実質勝率（1着確率）、レース展開、荒れ度、印、馬連推奨、三連複推奨を分析してください。
-
-    【重要指示】
-    出走馬の中から、必ず「◎(本命)」「◯(対抗)」「▲(穴馬)」「△(連下)」を含む、上位評価の馬を最低でも4頭〜6頭以上リストアップしてください。1頭のみの出力は禁止です。
-    また、馬連と三連複の推奨買い目もそれぞれ複数件提案してください。
-
-    【名古屋競馬特化の最重要解析ポイント】
-    1. 新コース形態（直線300m）に応じた末脚（差し・追込）の再評価
-    2. 距離別の展開有利不利（920mの先行力 vs 1500m/1700mの差し有利など）
-    3. 上がり3F性能（過去3走平均＆前走上がり3F順位）
-    4. トラックバイアスと持ち時計の比較
-
-    【学習済みの名古屋フィードバックルール（最優先適用）】
-    {rules_text}
-
-    以下のJSONフォーマットのみを出力してください。
+    あなたは地方競馬の確率論・展開読み・時計解析に精通したプロデータサイエンティストです。
+    提供された【出馬表データ】を精査し、各馬の勝率、レース展開、荒れ度、印、推奨買い目を分析してください。
+    
+    【🚨絶対厳守】
+    1. オッズの捏造禁止。見つからない場合は `0.0` とすること。
+    2. 馬名は実在するもののみ使用。印(◎◯▲△)は最低4頭出力。
+    3. volatility_score は必ず 1, 2, 3 のいずれかの数値を出力すること (1: 堅実/低波乱, 2: 中波乱, 3: 大荒れ/超高波乱)。
+    
+    【学習済みルール（最優先）】\n{rules_text}
+    
+    JSONフォーマットのみを出力:
     {{
-      "race_name": "レース名",
-      "volatility_level": "🔥🔥🔥 超高波乱（大荒れ注意）",
-      "volatility_reason": "単勝オッズは割れているが上位人気の上がり3F差が小さく、波乱要素大。",
-      "pace_prediction": "🔥 ハイペース想定（差し有利）",
-      "pace_reason": "同型先行馬が競合。直線300mの新名古屋コースで末脚炸裂の展開利。",
-      "predictions": [
-        {{
-          "mark": "◎",
-          "horse_number": 1,
-          "horse_name": "馬名",
-          "predicted_win_rate": 0.28,
-          "current_odds": 3.2,
-          "same_distance_eval": "🏆 名古屋同距離最高実績",
-          "condition_trend": "🔥 急上昇（絶好調）",
-          "recent_3f_history": [37.1, 36.8, 36.5],
-          "reason": "本命の理由詳細"
-        }},
-        {{
-          "mark": "◯",
-          "horse_number": 2,
-          "horse_name": "対抗馬名",
-          "predicted_win_rate": 0.18,
-          "current_odds": 4.5,
-          "same_distance_eval": "○ 同条件安定",
-          "condition_trend": "安定",
-          "recent_3f_history": [38.0, 37.5, 37.2],
-          "reason": "対抗の理由詳細"
-        }},
-        {{
-          "mark": "▲",
-          "horse_number": 5,
-          "horse_name": "穴馬名",
-          "predicted_win_rate": 0.12,
-          "current_odds": 12.0,
-          "same_distance_eval": "▲ 未知数",
-          "condition_trend": "一変注意",
-          "recent_3f_history": [39.1, 38.5, 37.0],
-          "reason": "穴馬の理由詳細"
-        }},
-        {{
-          "mark": "△",
-          "horse_number": 8,
-          "horse_name": "連下馬名",
-          "predicted_win_rate": 0.08,
-          "current_odds": 15.0,
-          "same_distance_eval": "△ 掲示板級",
-          "condition_trend": "平行線",
-          "recent_3f_history": [38.5, 38.2, 38.4],
-          "reason": "連下の理由詳細"
-        }}
-      ],
-      "recommended_umaren": [
-        {{
-          "combination": "1 - 2",
-          "predicted_rate": 0.15,
-          "current_odds": 10.5,
-          "reason": "堅実な組み合わせ"
-        }},
-        {{
-          "combination": "1 - 5",
-          "predicted_rate": 0.08,
-          "current_odds": 25.0,
-          "reason": "穴狙い"
-        }}
-      ],
-      "recommended_sanrenpuku": [
-        {{
-          "combination": "1 - 2 - 5",
-          "predicted_rate": 0.08,
-          "current_odds": 28.5,
-          "reason": "名古屋の長い直線を活かす差し脚信頼の三連複ペア"
-        }},
-        {{
-          "combination": "1 - 2 - 8",
-          "predicted_rate": 0.05,
-          "current_odds": 45.0,
-          "reason": "手堅い抑え"
-        }}
-      ]
+      "race_name": "レース名", 
+      "volatility_score": 3,
+      "volatility_level": "🔥🔥🔥 超高波乱", 
+      "volatility_reason": "理由",
+      "pace_prediction": "展開予測", 
+      "pace_reason": "理由",
+      "predictions": [ {{"mark": "◎", "horse_number": 1, "horse_name": "馬名", "predicted_win_rate": 0.3, "current_odds": 0.0, "reason": "理由"}} ],
+      "recommended_umaren": [ {{"combination": "1-2", "predicted_rate": 0.15, "current_odds": 0.0, "reason": "理由"}} ],
+      "recommended_sanrenpuku": [ {{"combination": "1-2-3", "predicted_rate": 0.08, "current_odds": 0.0, "reason": "理由"}} ]
     }}
     """
     try:
         model = genai.GenerativeModel('gemini-3.5-flash', system_instruction=system_prompt)
-        generation_config = genai.GenerationConfig(response_mime_type="application/json", temperature=0.1)
-        response = model.generate_content(combined_race_text, generation_config=generation_config)
-        return json.loads(response.text)
+        res = model.generate_content(combined_race_text, generation_config=genai.GenerationConfig(response_mime_type="application/json", temperature=0.1))
+        return json.loads(res.text)
     except Exception as e:
         return {"error": str(e)}
 
-def analyze_race_result(result_text):
-    system_prompt = """
-    あなたは地方名古屋競馬予想AIの自己改善プログラムです。
-    提供された【名古屋競馬の実際のレース結果】を分析し、1〜3着馬の共通点（上がり3F、通過順、トラックバイアスなど）から、今後の名古屋予想ロジックに組み込むべき追加ルール文を1〜2文で提案してください。
-
-    以下のJSONフォーマットのみを出力してください。
-    {
-      "race_summary": "1〜3着の実際の着順とタイムまとめ",
-      "winning_factors": "勝因・好走要因（名古屋新コース形態、上がり3F、展開など）",
-      "ai_reflection": "AI予想ロジックの反省点と今後の改善・修正ポイント",
-      "suggested_rule": "名古屋競馬用に学習させる具体的な追加ルール"
-    }
+def analyze_race_result(result_text, previous_prediction=None):
+    compare_prompt = f"【事前予想】\n{json.dumps(previous_prediction, ensure_ascii=False)}\n上記予想と実際の結果を照合し誤差を分析せよ。" if previous_prediction else ""
+    system_prompt = f"""
+    あなたは地方競馬予想AIの自己改善プログラムです。実際のレース結果を分析してください。
+    {compare_prompt}
+    今後の予想ロジック精度を上げるための追加ルール文を提案してください。
+    JSONのみ出力: {{"race_summary": "結果", "winning_factors": "勝因", "ai_reflection": "反省点", "suggested_rule": "新ルール案"}}
     """
     try:
         model = genai.GenerativeModel('gemini-3.5-flash', system_instruction=system_prompt)
-        generation_config = genai.GenerationConfig(response_mime_type="application/json", temperature=0.1)
-        response = model.generate_content(result_text, generation_config=generation_config)
-        return json.loads(response.text)
+        res = model.generate_content(result_text, generation_config=genai.GenerationConfig(response_mime_type="application/json", temperature=0.1))
+        return json.loads(res.text)
     except Exception as e:
         return {"error": str(e)}
 
-def calculate_kelly_bet(predicted_win_rate, odds, bankroll, kelly_fraction=0.25):
-    expected_value = predicted_win_rate * odds
-    if expected_value <= 1.0 or odds <= 1.0:
-        return {"action": "見送り", "bet_amount": 0, "percentage": 0.0, "ev": round(expected_value, 2)}
-    b = odds - 1.0
-    p = predicted_win_rate
-    q = 1.0 - p
-    f = (b * p - q) / b
-    adjusted_fraction = f * kelly_fraction
-    raw_bet = bankroll * adjusted_fraction
-    bet_amount = int(raw_bet // 100 * 100)
-    if bet_amount == 0 and raw_bet > 0:
-        bet_amount = 100
-    return {
-        "action": "買い" if bet_amount > 0 else "見送り",
-        "bet_amount": max(bet_amount, 0),
-        "percentage": round(max(adjusted_fraction, 0) * 100, 2),
-        "ev": round(expected_value, 2)
-    }
+def fetch_text_from_url(url):
+    try:
+        res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10)
+        res.encoding = res.apparent_encoding
+        soup = BeautifulSoup(res.content, 'html.parser')
+        for tag in soup(["script", "style", "noscript"]): tag.extract()
+        return soup.get_text(separator=' ', strip=True)
+    except Exception:
+        return ""
+
+def is_target_race(score, target_setting):
+    """ユーザーの波乱度設定とAIのスコアを比較し、購入対象レースか判定する"""
+    score = int(score) if str(score).isdigit() else 2
+    if target_setting == "すべて対象": return True
+    if target_setting == "中波乱以上(回収率重視)" and score >= 2: return True
+    if target_setting == "大荒れのみ(穴党)" and score == 3: return True
+    if target_setting == "堅実のみ(本命党)" and score == 1: return True
+    return False
 
 # ==========================================
 # 2. UI画面構成
 # ==========================================
-st.sidebar.title("🏇 名古屋競馬特化 AI ROI")
-page = st.sidebar.radio("メニュー", ["🛠️ 名古屋レース分析＆AI予測", "🏁 結果検証＆名古屋プロンプト学習", "📈 バックテスト分析"])
+st.sidebar.title("🏇 地方競馬 AI ROI")
+page = st.sidebar.radio("メニュー", ["🛠️ 1R単体 分析", "🔄 指定日一括 AI予想＆抽出", "📈 過去データ バックテスト自動学習"])
+
+st.sidebar.markdown("---")
+st.sidebar.header("🎯 馬券購入ターゲット設定")
+target_volatility = st.sidebar.radio(
+    "狙うレースの波乱度",
+    ["すべて対象", "中波乱以上(回収率重視)", "大荒れのみ(穴党)", "堅実のみ(本命党)"],
+    index=1
+)
+st.sidebar.caption("※設定した波乱度のレースだけが「買うべきレース」として抽出されます。")
 
 st.sidebar.markdown("---")
 st.sidebar.header("⚙️ 資金管理設定")
@@ -222,170 +157,136 @@ initial_bankroll = st.sidebar.number_input("現在資金 (円)", min_value=10000
 kelly_fraction = st.sidebar.slider("ケリー係数 (安全率)", min_value=0.1, max_value=1.0, value=0.25, step=0.05)
 
 st.sidebar.markdown("---")
-st.sidebar.subheader("🧠 適用中の【名古屋専用】ルール")
+st.sidebar.subheader("🧠 適用中ルール (自動保存済み)")
 if st.session_state["feedback_rules"]:
-    for i, r in enumerate(st.session_state["feedback_rules"]):
-        st.sidebar.caption(f"{i+1}. {r}")
-else:
-    st.sidebar.caption("適用中のカスタムルールはありません")
-
-if st.sidebar.button("全ルールを初期化"):
-    st.session_state["feedback_rules"] = []
+    for i, r in enumerate(st.session_state["feedback_rules"]): st.sidebar.caption(f"{i+1}. {r}")
+if st.sidebar.button("ルール初期化"):
+    st.session_state["feedback_rules"] = DEFAULT_RULES
+    save_rules(DEFAULT_RULES)
     st.rerun()
 
-if page == "🛠️ 名古屋レース分析＆AI予測":
-    st.title("🎯 名古屋競馬 AI全自動分析（馬連・三連複対応）")
-    st.write("netkeibaの地方競馬版（nar.netkeiba.com）の出馬表・新聞URLを入力してください。")
+if page == "🛠️ 1R単体 分析":
+    st.title("🎯 単一レース分析")
+    target_url = st.text_input("出馬表URL", value="https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/DebaTable?k_raceDate=2026%2F10%2F14&k_raceNo=1&k_babaCode=24")
+    if st.button("AI予想を実行"):
+        with st.spinner("解析中..."):
+            text = fetch_text_from_url(target_url)
+            res = get_gemini_prediction(text, st.session_state["feedback_rules"])
+            if "error" not in res:
+                st.session_state["last_prediction"]["single"] = res
+                
+                score = res.get("volatility_score", 2)
+                if is_target_race(score, target_volatility):
+                    st.success("🟢 **このレースは設定条件に合致する【勝負レース】です！** 購入を検討してください。")
+                else:
+                    st.warning("🔴 **このレースは見送りを推奨します。**（設定した波乱度と一致しません）")
+                
+                st.write(f"**判定波乱度:** {res.get('volatility_level')}")
+                st.write(f"**理由:** {res.get('volatility_reason')}")
+                st.json(res)
+
+elif page == "🔄 指定日一括 AI予想＆抽出":
+    st.title("🔄 1日全レース 一括AI予想 ＆ 買うべきレース抽出")
+    st.write("今日または明日の1RのURLを入力してください。AIが全レースを事前予想し、**買うべきレース（勝負レース）**を自動抽出します。")
+    st.caption("※前日の夜に明日のURLを入力すれば、翌日の『仕込み』が完了します！")
     
-    default_url = "https://nar.netkeiba.com/race/newspaper.html?race_id=202642101411"
-    target_url = st.text_input("名古屋競馬の出馬表 / 競馬新聞URLを入力", value=default_url)
+    base_url = st.text_input("1Rの出馬表 または 結果URLを入力", value="https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/DebaTable?k_raceDate=2026%2F10%2F15&k_raceNo=1&k_babaCode=24")
+    max_race = st.slider("処理する最終レース番号", min_value=1, max_value=12, value=12)
     
-    if st.button("名古屋特化AI分析を実行"):
-        if target_url and GOOGLE_API_KEY:
-            headers = {'User-Agent': 'Mozilla/5.0'}
-            with st.spinner('名古屋競馬データを取得＆AI解析中...'):
-                try:
-                    res_shutuba = requests.get(target_url, headers=headers, timeout=10)
-                    soup_shutuba = BeautifulSoup(res_shutuba.content, 'html.parser', from_encoding='euc-jp')
-                    for tag in soup_shutuba(["script", "style", "noscript", "iframe"]):
-                        tag.extract()
-                    race_title = soup_shutuba.find('div', class_='RaceName') or soup_shutuba.find('h1', class_='RaceName')
-                    race_name = race_title.get_text(strip=True) if race_title else "名古屋対象レース"
-                    newspaper_table = soup_shutuba.find('div', id='RaceNewspaper') or soup_shutuba.find('table', class_='Shutuba_Table') or soup_shutuba.find('table')
-                    shutuba_text = newspaper_table.get_text(separator=' ', strip=True) if newspaper_table else soup_shutuba.get_text(separator=' ', strip=True)
+    col1, col2 = st.columns(2)
+    if col1.button("🚀 一括AI予想 ＆ 勝負レース抽出"):
+        progress_bar = st.progress(0)
+        target_races = []
+        
+        for race_no in range(1, max_race + 1):
+            current_url = re.sub(r'k_raceNo=\d+', f'k_raceNo={race_no}', base_url)
+            text = fetch_text_from_url(current_url)
+            if text:
+                res = get_gemini_prediction(text, st.session_state["feedback_rules"])
+                st.session_state["last_prediction"][f"{race_no}R"] = res
+                
+                if "error" not in res:
+                    score = res.get("volatility_score", 2)
+                    if is_target_race(score, target_volatility):
+                        target_races.append(f"{race_no}R ({res.get('volatility_level')})")
+            
+            time.sleep(1.5)
+            progress_bar.progress(race_no / max_race)
+            
+        st.success("✅ 一括予想完了！")
+        
+        # 勝負レースのピックアップ表示
+        st.markdown("---")
+        st.header(f"💰 指定日の「買うべき勝負レース」一覧 (設定: {target_volatility})")
+        if target_races:
+            st.success("以下のレースがあなたの投資条件に合致しています！明日はこのレースに予算を集中させましょう。")
+            for tr in target_races:
+                st.markdown(f"- **{tr}**")
+        else:
+            st.warning("指定日には設定条件に合致するレースがありませんでした。資金温存（全見送り）を推奨します。")
 
-                    oikiri_url = target_url.replace("newspaper.html", "oikiri.html").replace("shutuba.html", "oikiri.html")
-                    res_oikiri = requests.get(oikiri_url, headers=headers, timeout=10)
-                    soup_oikiri = BeautifulSoup(res_oikiri.content, 'html.parser', from_encoding='euc-jp')
-                    for tag in soup_oikiri(["script", "style", "noscript", "iframe"]):
-                        tag.extract()
-                    oikiri_table = soup_oikiri.find('table', class_='Oikiri_Table') or soup_oikiri.find('div', class_='OikiriData')
-                    oikiri_text = oikiri_table.get_text(separator=' ', strip=True) if oikiri_table else soup_oikiri.get_text(separator=' ', strip=True)
+    if col2.button("🏁 レース終了後：一括結果検証＆学習"):
+        st.info("※レースが終了してから実行してください。")
+        progress_bar = st.progress(0)
+        all_suggested_rules = []
+        for race_no in range(1, max_race + 1):
+            res_url = base_url.replace("DebaTable", "RaceMarkTable")
+            current_url = re.sub(r'k_raceNo=\d+', f'k_raceNo={race_no}', res_url)
+            text = fetch_text_from_url(current_url)
+            prev_pred = st.session_state["last_prediction"].get(f"{race_no}R", None)
+            if text:
+                analysis = analyze_race_result(text, previous_prediction=prev_pred)
+                if "error" not in analysis and analysis.get('suggested_rule'):
+                    all_suggested_rules.append(analysis['suggested_rule'])
+            time.sleep(1.5)
+            progress_bar.progress(race_no / max_race)
+        
+        if all_suggested_rules:
+            new_rules, _ = deduplicate_and_merge_rules(st.session_state["feedback_rules"], "\n".join(all_suggested_rules))
+            st.session_state["feedback_rules"] = new_rules
+            save_rules(new_rules)
+            st.success("✅ 学びを `rules.json` に永続保存しました！")
+            st.rerun()
 
-                    combined_race_text = f"【レース名】: {race_name}\n\n【名古屋出馬表・新聞データ】:\n{shutuba_text}\n\n【調教データ】:\n{oikiri_text}"
-                    
-                    res = get_gemini_prediction(combined_race_text, feedback_rules=st.session_state["feedback_rules"])
-                    
-                    if "error" not in res:
-                        st.subheader(f"📊 【{res.get('race_name', race_name)}】 名古屋AI分析結果")
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.info(f"⚡ **レース波乱度:** {res.get('volatility_level', '')}\n\n{res.get('volatility_reason', '')}")
-                        with col2:
-                            st.success(f"🏁 **名古屋予想展開:** {res.get('pace_prediction', '')}\n\n{res.get('pace_reason', '')}")
-                        
-                        st.markdown("### 🏇 出走馬・印別予測勝率 (名古屋新コース形態反映)")
-                        preds = res.get("predictions", [])
-                        if preds:
-                            table_preds = []
-                            for item in preds:
-                                rate = item.get("predicted_win_rate", 0)
-                                odds = item.get("current_odds", 1.0)
-                                kelly = calculate_kelly_bet(rate, odds, initial_bankroll, kelly_fraction)
-                                table_preds.append({
-                                    "印": item.get("mark", "-"),
-                                    "馬番": item.get("horse_number", "-"),
-                                    "馬名": item.get("horse_name", "-"),
-                                    "AI予測勝率": f"{rate*100:.1f}%",
-                                    "単勝オッズ": f"{odds}倍",
-                                    "名古屋適性": item.get("same_distance_eval", "-"),
-                                    "調子トレンド": item.get("condition_trend", "-"),
-                                    "期待値(EV)": kelly["ev"],
-                                    "単勝判定": "🔥 買い" if kelly["ev"] > 1.0 else "⏸️ 見送り",
-                                    "推奨購入額": f"¥{kelly['bet_amount']:,}",
-                                    "評価理由": item.get("reason", "")
-                                })
-                            st.dataframe(pd.DataFrame(table_preds), use_container_width=True)
-
-                        st.markdown("### 🎟️ おすすめ馬連ペア（期待値順）")
-                        umaren_list = res.get("recommended_umaren", [])
-                        if umaren_list:
-                            table_umaren = []
-                            for item in umaren_list:
-                                combo = item.get("combination")
-                                rate = item.get("predicted_rate", 0)
-                                odds = item.get("current_odds", 1.0)
-                                kelly = calculate_kelly_bet(rate, odds, initial_bankroll, kelly_fraction)
-                                table_umaren.append({
-                                    "馬連ペア": combo,
-                                    "的中確率": f"{rate*100:.1f}%",
-                                    "想定オッズ": f"{odds}倍",
-                                    "期待値(EV)": kelly["ev"],
-                                    "馬連判定": "🔥 買い" if kelly["ev"] > 1.0 else "⏸️ 見送り",
-                                    "推奨購入額": f"¥{kelly['bet_amount']:,}",
-                                    "理由": item.get("reason", "")
-                                })
-                            st.dataframe(pd.DataFrame(table_umaren), use_container_width=True)
-
-                        st.markdown("### 🥉 おすすめ三連複組み合わせ（期待値順）")
-                        sanrenpuku_list = res.get("recommended_sanrenpuku", [])
-                        if sanrenpuku_list:
-                            table_sanrenpuku = []
-                            for item in sanrenpuku_list:
-                                combo = item.get("combination")
-                                rate = item.get("predicted_rate", 0)
-                                odds = item.get("current_odds", 1.0)
-                                kelly = calculate_kelly_bet(rate, odds, initial_bankroll, kelly_fraction)
-                                table_sanrenpuku.append({
-                                    "三連複組合せ": combo,
-                                    "的中確率": f"{rate*100:.1f}%",
-                                    "想定オッズ": f"{odds}倍",
-                                    "期待値(EV)": kelly["ev"],
-                                    "三連複判定": "🔥 買い" if kelly["ev"] > 1.0 else "⏸️ 見送り",
-                                    "推奨購入額": f"¥{kelly['bet_amount']:,}",
-                                    "理由": item.get("reason", "")
-                                })
-                            st.dataframe(pd.DataFrame(table_sanrenpuku), use_container_width=True)
-                except Exception as e:
-                    st.error(f"エラー: {e}")
-
-elif page == "🏁 結果検証＆名古屋プロンプト学習":
-    st.title("🏁 名古屋レース結果検証 ＆ AI学習")
-    st.write("名古屋競馬のレース結果（`result.html`）をスクレイピングして、名古屋特有の波乱要因・トラックバイアスを学習させます。")
+elif page == "📈 過去データ バックテスト自動学習":
+    st.title("📈 過去レース バックテスト自動学習マシーン")
+    st.write("過去のレース日（1R）の出馬表URLを入力するだけで、AIが内部で「予想→結果照合→反省→ルール抽出→ファイル保存」までを全自動で行い、AI自身を鍛え上げます。")
     
-    result_url = st.text_input("名古屋レース結果URLを入力", value="https://nar.netkeiba.com/race/result.html?race_id=202642101411")
+    past_base_url = st.text_input("過去レース 1Rの出馬表URLを入力", placeholder="例: .../DebaTable?k_raceDate=2026%2F09%2F01&k_raceNo=1&k_babaCode=24")
+    past_max_race = st.slider("学習するレース数", min_value=1, max_value=12, value=12)
     
-    if st.button("名古屋レース結果を検証・反省する"):
-        if result_url and GOOGLE_API_KEY:
-            headers = {'User-Agent': 'Mozilla/5.0'}
-            with st.spinner('名古屋レース結果を取得中...'):
-                try:
-                    res_result = requests.get(result_url, headers=headers, timeout=10)
-                    soup_result = BeautifulSoup(res_result.content, 'html.parser', from_encoding='euc-jp')
-                    for tag in soup_result(["script", "style", "noscript", "iframe"]):
-                        tag.extract()
-                    
-                    result_table = soup_result.find('table', id='All_Result_Table') or soup_result.find('table')
-                    result_text = result_table.get_text(separator=' ', strip=True) if result_table else soup_result.get_text(separator=' ', strip=True)
-                    
-                    analysis = analyze_race_result(result_text)
-                    
-                    if "error" not in analysis:
-                        st.subheader("📝 名古屋AIのレース振り返り＆反省")
-                        st.write(f"**【1〜3着結果】:** {analysis.get('race_summary', '')}")
-                        st.success(f"💡 **【名古屋での勝因・好走要因】:**\n{analysis.get('winning_factors', '')}")
-                        st.warning(f"🔧 **【AIの反省点】:**\n{analysis.get('ai_reflection', '')}")
-                        
-                        sug_rule = analysis.get('suggested_rule', '')
-                        st.session_state["current_sug_rule"] = sug_rule
-                        st.markdown(f"### 🧠 AIが提案する新・名古屋ルール:\n> **{sug_rule}**")
-                    else:
-                        st.error(f"分析エラー: {analysis['error']}")
-                except Exception as e:
-                    st.error(f"取得エラー: {e}")
-
-    if "current_sug_rule" in st.session_state and st.session_state["current_sug_rule"]:
-        if st.button("➕ 重複チェックを行って名古屋ルールに統合・保存"):
-            with st.spinner('名古屋既存ルールとの重複統合処理中...'):
-                new_rules, reason = deduplicate_and_merge_rules(
-                    st.session_state["feedback_rules"], 
-                    st.session_state["current_sug_rule"]
-                )
-                st.session_state["feedback_rules"] = new_rules
-                st.success(f"処理完了: {reason}")
-                st.session_state["current_sug_rule"] = None
+    if st.button("🧠 過去データから全自動でAIをトレーニングする"):
+        if "k_raceNo=" not in past_base_url:
+            st.error("URLに `k_raceNo=` が含まれていません。")
+        else:
+            progress_text = st.empty()
+            progress_bar = st.progress(0)
+            all_suggested_rules = []
+            
+            for race_no in range(1, past_max_race + 1):
+                progress_text.text(f"【{race_no}R】 出馬表解析中 ＆ 結果照合中... (AIトレーニング実行中)")
+                deba_url = re.sub(r'k_raceNo=\d+', f'k_raceNo={race_no}', past_base_url)
+                deba_text = fetch_text_from_url(deba_url)
+                mock_pred = None
+                if deba_text:
+                    mock_pred = get_gemini_prediction(deba_text, st.session_state["feedback_rules"])
+                time.sleep(1.5)
+                
+                res_url = deba_url.replace("DebaTable", "RaceMarkTable")
+                res_text = fetch_text_from_url(res_url)
+                if res_text:
+                    analysis = analyze_race_result(res_text, previous_prediction=mock_pred)
+                    if "error" not in analysis and analysis.get('suggested_rule'):
+                        all_suggested_rules.append(analysis['suggested_rule'])
+                time.sleep(1.5)
+                progress_bar.progress(race_no / past_max_race)
+            
+            progress_text.text("✅ 全レースのバックテスト・トレーニングが完了しました！")
+            
+            if all_suggested_rules:
+                with st.spinner("抽出したすべての反省ルールを統合し、データベースに保存しています..."):
+                    new_rules, _ = deduplicate_and_merge_rules(st.session_state["feedback_rules"], "\n".join(all_suggested_rules))
+                    st.session_state["feedback_rules"] = new_rules
+                    save_rules(new_rules)
+                st.success("🎉 バックテストで得た教訓をすべて `rules.json` に統合・保存しました！AIがさらに賢くなりました。")
                 st.rerun()
-
-elif page == "📈 バックテスト分析":
-    st.title("📈 名古屋競馬 バックテスト結果")
-    st.write("名古屋競馬の過去シミュレーションエリアです。")
