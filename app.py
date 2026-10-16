@@ -154,12 +154,10 @@ def calculate_kelly_bet(predicted_win_rate, odds, bankroll, kelly_fraction=0.25)
     return {"action": "買い" if bet > 0 else "見送り", "bet_amount": max(bet, 100 if bet>0 else 0), "ev": round(ev, 2)}
 
 def check_umaren_hit(ai_combinations, actual_combination):
-    """馬連の組み合わせ（例: '1-2' と '2-1'）の順不同マッチング判定"""
     try:
         if not actual_combination or actual_combination == "-": return False
         actual_set = set(re.findall(r'\d+', actual_combination))
         if len(actual_set) != 2: return False
-        
         for ai_combo in ai_combinations:
             ai_set = set(re.findall(r'\d+', str(ai_combo)))
             if ai_set == actual_set:
@@ -181,7 +179,6 @@ target_volatility = st.sidebar.radio(
     ["すべて対象", "中波乱以上(回収率重視)", "大荒れのみ(穴党)", "堅実のみ(本命党)"],
     index=1
 )
-st.sidebar.caption("※設定した波乱度のレースだけが抽出されます。")
 
 st.sidebar.markdown("---")
 st.sidebar.header("⚙️ 資金管理設定")
@@ -189,13 +186,40 @@ initial_bankroll = st.sidebar.number_input("現在資金 (円)", min_value=10000
 kelly_fraction = st.sidebar.slider("ケリー係数 (安全率)", min_value=0.1, max_value=1.0, value=0.25, step=0.05)
 
 st.sidebar.markdown("---")
-st.sidebar.subheader("🧠 適用中ルール (自動保存済み)")
+st.sidebar.subheader("🧠 適用中ルール")
 if st.session_state["feedback_rules"]:
     for i, r in enumerate(st.session_state["feedback_rules"]): st.sidebar.caption(f"{i+1}. {r}")
 if st.sidebar.button("ルール初期化"):
     st.session_state["feedback_rules"] = DEFAULT_RULES
     save_rules(DEFAULT_RULES)
     st.rerun()
+
+# --- ルールのバックアップと復元機能を追加 ---
+st.sidebar.markdown("---")
+st.sidebar.subheader("💾 ルールのバックアップと復元")
+st.sidebar.caption("※クラウド環境のリセット対策です。一日の終わりに保存してください。")
+
+# ダウンロード機能
+rules_json_str = json.dumps(st.session_state["feedback_rules"], ensure_ascii=False, indent=2)
+st.sidebar.download_button(
+    label="📥 現在のルールをPCに保存",
+    data=rules_json_str,
+    file_name="my_rules_backup.json",
+    mime="application/json"
+)
+
+# アップロード機能
+uploaded_file = st.sidebar.file_uploader("📤 保存したルールを復元", type=["json"])
+if uploaded_file is not None:
+    try:
+        loaded_rules = json.load(uploaded_file)
+        if isinstance(loaded_rules, list):
+            st.session_state["feedback_rules"] = loaded_rules
+            save_rules(loaded_rules)
+            st.sidebar.success("ルールを復元しました！一度ページをリロードするか、もう一度分析を実行してください。")
+    except Exception as e:
+        st.sidebar.error("ファイルの読み込みに失敗しました。")
+# ----------------------------------------
 
 if page == "🛠️ 1R単体 分析":
     st.title("🎯 単一レース分析")
@@ -255,6 +279,25 @@ if page == "🛠️ 1R単体 分析":
                             "推奨額": f"¥{kelly['bet_amount']:,}" if odds > 0 else "-"
                         })
                     st.dataframe(pd.DataFrame(table_umaren), use_container_width=True)
+
+                st.markdown("### 🥉 おすすめ三連複組み合わせ")
+                sanrenpuku_list = res.get("recommended_sanrenpuku", [])
+                if sanrenpuku_list:
+                    table_sanrenpuku = []
+                    for item in sanrenpuku_list:
+                        combo = item.get("combination")
+                        rate = item.get("predicted_rate", 0)
+                        odds = item.get("current_odds", 0.0)
+                        kelly = calculate_kelly_bet(rate, odds, initial_bankroll, kelly_fraction)
+                        table_sanrenpuku.append({
+                            "三連複組合せ": combo,
+                            "的中確率": f"{rate*100:.1f}%",
+                            "想定オッズ": f"{odds}倍" if odds > 0 else "取得不可",
+                            "期待値(EV)": kelly["ev"] if odds > 0 else "-",
+                            "三連複判定": kelly["action"],
+                            "推奨額": f"¥{kelly['bet_amount']:,}" if odds > 0 else "-"
+                        })
+                    st.dataframe(pd.DataFrame(table_sanrenpuku), use_container_width=True)
             else:
                 st.error("解析エラーが発生しました。")
 
@@ -281,7 +324,6 @@ elif page == "🔄 指定日一括 AI予想＆抽出":
                     if is_target_race(score, target_volatility):
                         target_races.append(f"{race_no}R ({res.get('volatility_level')})")
                     
-                    # 馬連予想の集計
                     for u in res.get("recommended_umaren", []):
                         all_umaren_preds.append({
                             "レース": f"{race_no}R",
@@ -289,13 +331,11 @@ elif page == "🔄 指定日一括 AI予想＆抽出":
                             "的中確率": f"{u.get('predicted_rate', 0)*100:.1f}%",
                             "推奨理由": u.get("reason", "")
                         })
-            
             time.sleep(1.5)
             progress_bar.progress(race_no / max_race)
             
         st.success("✅ 一括予想完了！")
         
-        # 勝負レースのピックアップ表示
         st.markdown("---")
         st.header(f"💰 買うべき勝負レース一覧 (設定: {target_volatility})")
         if target_races:
@@ -328,10 +368,8 @@ elif page == "🔄 指定日一括 AI予想＆抽出":
                     if analysis.get('suggested_rule'):
                         all_suggested_rules.append(analysis['suggested_rule'])
                     
-                    # 馬連の的中・不的中判定
                     actual_umaren = analysis.get("actual_umaren", "-")
                     actual_payout = analysis.get("actual_umaren_payout", "-")
-                    
                     ai_umaren_list = [u.get("combination") for u in prev_pred.get("recommended_umaren", [])] if prev_pred else []
                     ai_umaren_str = ", ".join([str(a) for a in ai_umaren_list]) if ai_umaren_list else "予想なし"
                     
@@ -346,7 +384,6 @@ elif page == "🔄 指定日一括 AI予想＆抽出":
                         "配当": actual_payout,
                         "結果": hit_mark
                     })
-                    
             time.sleep(1.5)
             progress_bar.progress(race_no / max_race)
             
@@ -359,7 +396,7 @@ elif page == "🔄 指定日一括 AI予想＆抽出":
             new_rules, _ = deduplicate_and_merge_rules(st.session_state["feedback_rules"], "\n".join(all_suggested_rules))
             st.session_state["feedback_rules"] = new_rules
             save_rules(new_rules)
-            st.success("✅ 全レースの答え合わせと学習が完了し、`rules.json` に永続保存しました！")
+            st.success("✅ 全レースの答え合わせと学習が完了し、`rules.json` に保存しました！さらにPCへバックアップしておくことをお勧めします。")
 
 elif page == "📈 過去データ バックテスト自動学習":
     st.title("📈 過去レース バックテスト自動学習マシーン")
@@ -399,5 +436,5 @@ elif page == "📈 過去データ バックテスト自動学習":
                     new_rules, _ = deduplicate_and_merge_rules(st.session_state["feedback_rules"], "\n".join(all_suggested_rules))
                     st.session_state["feedback_rules"] = new_rules
                     save_rules(new_rules)
-                st.success("🎉 バックテストで得た教訓をすべて `rules.json` に統合・保存しました！")
+                st.success("🎉 バックテストで得た教訓をすべて `rules.json` に統合・保存しました！左のメニューからPCへバックアップしておくことをお勧めします。")
                 st.rerun()
