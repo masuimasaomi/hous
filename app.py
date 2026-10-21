@@ -12,7 +12,7 @@ import google.generativeai as genai
 # ==========================================
 # 0. 初期設定とAPI設定
 # ==========================================
-st.set_page_config(page_title="名古屋競馬 AI ROIオプティマイザ", page_icon="🏇", layout="wide")
+st.set_page_config(page_title="園田競馬 AI ROIオプティマイザ", page_icon="🏇", layout="wide")
 
 GOOGLE_API_KEY = st.secrets.get("GOOGLE_API_KEY", os.environ.get("GOOGLE_API_KEY", ""))
 if GOOGLE_API_KEY:
@@ -23,10 +23,10 @@ if GOOGLE_API_KEY:
 # ==========================================
 RULES_FILE = "rules.json"
 DEFAULT_RULES = [
-    "【名古屋・新コース形態】2022年移転後の新コースは直線が300mと西日本最長クラスのため、旧コースのような前残り一辺倒ではなく、過去3走平均の上がり3F上位の差し・追込馬の勝率・期待値を高く評価すること。",
-    "【名古屋・1500m戦の展開】主力距離である1500m戦は最初のコーナーまで距離がありペースが速くなりやすいため、逃げ・先行馬が競り合う場合は中団待機の馬を大幅に加点すること。",
-    "【名古屋・920m短距離】920mの超短距離戦では圧倒的にテンのスピード（スタートからのダッシュ力・前走の通過順1〜2番手）を最優先で評価すること。",
-    "【馬場状態・時計勝負】重・不良馬場では極端に時計が速くなる傾向があるため、良馬場の上がり性能よりも「持ち時計（走破タイム実績）」の優秀な馬を強力加点すること。"
+    "【園田・コース形態】1周1051m、直線213mという極めて小回りのコースであるため、圧倒的に逃げ・先行馬が有利。テンのスピード（スタートから1コーナーまでの位置取り）を最優先で評価すること。",
+    "【園田・1400m戦】主力距離の1400m戦では、内枠の先行馬がコースロスなく立ち回れるため有利。後方からの差し・追込は、向正面からの早めのまくり（3角〜4角で先頭集団に取り付く脚）がない限り届かないため大幅に割り引くこと。",
+    "【園田・820m超短距離】820m戦はスタートが全て。前走のスタートダッシュや、テンの1Fタイムを重視し、ダッシュ力のある内枠の逃げ馬を強力に加点すること。",
+    "【騎手・コース適性】園田競馬は特有の小回り適性とジョッキーの腕が直結しやすいため、吉村騎手や下原騎手などのリーディング上位騎手、および園田コースでの好走歴を高く評価すること。"
 ]
 
 def load_rules():
@@ -57,7 +57,7 @@ def deduplicate_and_merge_rules(existing_rules, new_rule):
     if not existing_rules:
         return [new_rule], "新規追加"
     system_prompt = """
-    あなたは地方名古屋競馬AIのナレッジベース管理モジュールです。
+    あなたは地方・園田競馬AIのナレッジベース管理モジュールです。
     【既存のルール一覧】と【追加したい新しいルール】を分析し、同種のものは統合し、新しいものは末尾に追加してください。
     JSONフォーマットのみを出力してください: {"status": "MERGED", "merged_rules": ["..."], "reason": "..."}
     """
@@ -74,7 +74,7 @@ def deduplicate_and_merge_rules(existing_rules, new_rule):
 def get_gemini_prediction(combined_race_text, feedback_rules=None):
     rules_text = "\n".join([f"- {r}" for r in feedback_rules]) if feedback_rules else "- 特になし"
     system_prompt = f"""
-    あなたは地方競馬・名古屋競馬場の確率論・展開読み・時計解析に精通したプロデータサイエンティストです。
+    あなたは地方競馬・園田競馬場の確率論・展開読み・時計解析に精通したプロデータサイエンティストです。
     提供された【出馬表データ】を精査し、各馬の勝率、レース展開、荒れ度、印、推奨買い目を分析してください。
     
     【🚨絶対厳守の追加事項】
@@ -82,7 +82,7 @@ def get_gemini_prediction(combined_race_text, feedback_rules=None):
     2. 印(◎◯▲△)は最低4頭出力。
     3. volatility_score は必ず 1, 2, 3 のいずれかの数値を出力すること (1: 堅実, 2: 中波乱, 3: 大荒れ)。
     4. 【調子の算出】: オッズが0.0の場合でも評価できるよう、純粋に「過去の競走成績」から算出した該当レースにおける各馬の「調子評価・純粋な能力評価」を記述。
-    5. 【レース傾向と4角位置】: 「当該レースの展開傾向」と、各馬の「最終コーナー（4角）を通過する際の位置取り確率（%表記）」を出力。
+    5. 【レース傾向と4角位置】: 直線213mの園田特有の「当該レースの展開傾向」と、各馬の「最終コーナー（4角）を通過する際の位置取り確率（%表記）」を出力。園田ではここで先頭集団にいないと基本届きません。
     
     【学習済みルール（最優先）】\n{rules_text}
     
@@ -92,13 +92,13 @@ def get_gemini_prediction(combined_race_text, feedback_rules=None):
       "volatility_score": 2,
       "volatility_level": "🔥🔥 中波乱", 
       "volatility_reason": "波乱の理由",
-      "race_trend": "当該レースの傾向",
+      "race_trend": "当該レースの傾向（例: 内枠の先行争いが激化し、まくり馬に展開が向く等）",
       "pace_prediction": "ハイペース想定", 
       "pace_reason": "展開理由",
       "predictions": [ 
         {{
           "mark": "◎", "horse_number": 1, "horse_name": "馬名", "predicted_win_rate": 0.3, "current_odds": 0.0, 
-          "condition_eval": "S (近3走連続で上がり最速)", "corner_4_position": "先頭〜2番手 (確率: 75%)", "reason": "本命理由"
+          "condition_eval": "S (近走逃げて連対続き)", "corner_4_position": "先頭〜2番手 (確率: 80%)", "reason": "本命理由"
         }} 
       ],
       "recommended_umaren": [ {{"combination": "1-2", "predicted_rate": 0.15, "current_odds": 0.0, "reason": "理由"}} ],
@@ -115,21 +115,21 @@ def get_gemini_prediction(combined_race_text, feedback_rules=None):
 def analyze_race_result(result_text, previous_prediction=None):
     compare_prompt = f"【事前予想】\n{json.dumps(previous_prediction, ensure_ascii=False)}\n上記予想と実際の結果を照合し誤差を分析せよ。" if previous_prediction else ""
     system_prompt = f"""
-    あなたは地方名古屋競馬予想AIの自己改善プログラムです。実際のレース結果を分析してください。
+    あなたは地方・園田競馬予想AIの自己改善プログラムです。実際のレース結果を分析してください。
     {compare_prompt}
     
-    今後の名古屋予想ロジック精度を上げるための追加ルール文を提案してください。
+    今後の園田予想ロジック精度を上げるための追加ルール文を提案してください。
     
     【🚨重要考察：能力 vs オッズ】
     「AIが算出した純粋な能力評価・勝率予測」と「実際の結果（および最終オッズ・人気）」を比較してください。
-    世間のオッズ（人気）よりも、AIの能力ベースの予想の方が結果を正確に捉えていたか（妙味があったか）、それともオッズ通りの実力決着でAIが過信していたかを分析し、「ability_vs_odds_insight」として出力してください。
+    世間のオッズ（人気）よりも、AIの能力ベースの予想の方が結果を正確に捉えていたか（妙味があったか）、それともオッズ通りの実力決着でAIが過信していたかを分析し、「ability_vs_odds_insight」として出力してください。園田特有のまくりや内枠有利バイアスが見落とされていなかったかも含めてください。
     
     JSONのみ出力: 
     {{
       "race_summary": "結果", 
       "actual_umaren": "実際の馬連組み合わせ (例: 1-2)",
       "actual_umaren_payout": "実際の馬連配当 (例: 1,500円)",
-      "winning_factors": "勝因(名古屋のコースバイアスなど)", 
+      "winning_factors": "勝因(園田のコースバイアスなど)", 
       "ability_vs_odds_insight": "【能力評価 vs オッズ】の比較分析インサイト",
       "ai_reflection": "AI予測の反省点・ズレの原因", 
       "suggested_rule": "新ルール案"
@@ -184,7 +184,7 @@ def check_umaren_hit(ai_combinations, actual_combination):
 # ==========================================
 # 2. UI画面構成
 # ==========================================
-st.sidebar.title("🏇 名古屋競馬 AI ROI")
+st.sidebar.title("🏇 園田競馬 AI ROI")
 page = st.sidebar.radio("メニュー", ["🛠️ 1R単体 分析", "🔄 指定日一括 AI予想＆抽出", "📈 過去レース 予想＆結果シミュレーター"])
 
 st.sidebar.markdown("---")
@@ -212,7 +212,7 @@ if st.sidebar.button("ルール初期化"):
 st.sidebar.markdown("---")
 st.sidebar.subheader("💾 ルールのバックアップと復元")
 rules_json_str = json.dumps(st.session_state["feedback_rules"], ensure_ascii=False, indent=2)
-st.sidebar.download_button(label="📥 現在のルールをPCに保存", data=rules_json_str, file_name="nagoya_rules_backup.json", mime="application/json")
+st.sidebar.download_button(label="📥 現在のルールをPCに保存", data=rules_json_str, file_name="sonoda_rules_backup.json", mime="application/json")
 uploaded_file = st.sidebar.file_uploader("📤 保存したルールを復元", type=["json"])
 if uploaded_file is not None:
     try:
@@ -224,13 +224,14 @@ if uploaded_file is not None:
     except Exception:
         st.sidebar.error("読み込み失敗")
 
-default_nagoya_url = "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/DebaTable?k_raceDate=2026%2F10%2F19&k_raceNo=1&k_babaCode=24"
+# 園田競馬の競馬場コードは k_babaCode=27
+default_sonoda_url = "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/DebaTable?k_raceDate=2026%2F10%2F21&k_raceNo=1&k_babaCode=27"
 
 if page == "🛠️ 1R単体 分析":
-    st.title("🎯 名古屋 単一レース分析")
-    target_url = st.text_input("出馬表URL (名古屋)", value=default_nagoya_url)
+    st.title("🎯 園田 単一レース分析")
+    target_url = st.text_input("出馬表URL (園田)", value=default_sonoda_url)
     if st.button("AI予想を実行"):
-        with st.spinner("名古屋コース特性と過去の成績から解析中..."):
+        with st.spinner("園田コース特性(小回り先行有利)と過去の成績から解析中..."):
             text = fetch_text_from_url(target_url)
             res = get_gemini_prediction(text, st.session_state["feedback_rules"])
             if "error" not in res:
@@ -282,8 +283,8 @@ if page == "🛠️ 1R単体 分析":
                 st.error("解析エラーが発生しました。")
 
 elif page == "🔄 指定日一括 AI予想＆抽出":
-    st.title("🔄 名古屋 1日全レース 一括AI予想 ＆ 結果照合")
-    base_url = st.text_input("1Rの出馬表 または 結果URLを入力 (名古屋)", value=default_nagoya_url)
+    st.title("🔄 園田 1日全レース 一括AI予想 ＆ 結果照合")
+    base_url = st.text_input("1Rの出馬表 または 結果URLを入力 (園田)", value=default_sonoda_url)
     max_race = st.slider("処理する最終レース番号", min_value=1, max_value=12, value=12)
     
     col1, col2 = st.columns(2)
@@ -357,10 +358,10 @@ elif page == "🔄 指定日一括 AI予想＆抽出":
             st.success("✅ 全レースの答え合わせと学習が完了し、`rules.json` に保存しました！")
 
 elif page == "📈 過去レース 予想＆結果シミュレーター":
-    st.title("📈 過去レース 予想＆結果シミュレーター")
+    st.title("📈 園田競馬 シミュレーター＆自動学習マシーン")
     st.write("過去のレースURLを入力すると、「①AIが競走成績から事前予想」→「②実際の結果・オッズと照合」→「③能力評価とオッズの比較検証」を行います。")
     
-    past_base_url = st.text_input("過去レース 1Rの出馬表URLを入力 (名古屋)", placeholder="例: .../DebaTable?k_raceDate=2026%2F09%2F01&k_raceNo=1&k_babaCode=24")
+    past_base_url = st.text_input("過去レース 1Rの出馬表URLを入力 (園田)", placeholder="例: .../DebaTable?k_raceDate=2026%2F09%2F01&k_raceNo=1&k_babaCode=27")
     past_max_race = st.slider("シミュレーションするレース数", min_value=1, max_value=12, value=12)
     
     if st.button("🧠 シミュレーション実行 ＆ ルール学習"):
